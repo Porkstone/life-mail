@@ -12,7 +12,8 @@
   "dependencies": {
     "convex": "^1.36.1",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "react-router-dom": "^7.15.0"
   },
   "devDependencies": {
     "@convex-dev/eslint-plugin": "^1.2.2",

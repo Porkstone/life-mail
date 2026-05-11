@@ -15,11 +15,23 @@ export default defineSchema({
     subject: v.string(),
     attachmentCount: v.number(),
     receivedAt: v.number(),
+    archived: v.optional(v.boolean()),
+    bodyHtml: v.optional(v.union(v.string(), v.null())),
+    bodyText: v.optional(v.union(v.string(), v.null())),
+    bodyFetchedAt: v.optional(v.number()),
+    bodyFetchStatus: v.optional(
+      v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
+    ),
+    bodyFetchError: v.optional(v.string()),
     rawEvent: v.string(),
   })
     .index("by_webhook_id", ["webhookId"])
     .index("by_resend_email_id", ["resendEmailId"])
-    .index("by_received_at", ["receivedAt"]),
+    .index("by_received_at", ["receivedAt"])
+    .index("by_body_fetch_status_and_received_at", [
+      "bodyFetchStatus",
+      "receivedAt",
+    ]),
 
   receivedMessageAttachments: defineTable({
     messageId: v.id("receivedMessages"),
@@ -29,4 +41,25 @@ export default defineSchema({
     contentDisposition: v.string(),
     contentId: v.union(v.string(), v.null()),
   }).index("by_message_id", ["messageId"]),
+
+  sentMessages: defineTable({
+    resendEmailId: v.string(),
+    originalMessageId: v.id("receivedMessages"),
+    originalResendMessageId: v.string(),
+    from: v.string(),
+    to: v.array(v.string()),
+    cc: v.array(v.string()),
+    subject: v.string(),
+    text: v.string(),
+    sentAt: v.number(),
+    resendResponse: v.string(),
+  })
+    .index("by_original_message_id", ["originalMessageId"])
+    .index("by_resend_email_id", ["resendEmailId"])
+    .index("by_sent_at", ["sentAt"]),
+
+  blockedSenders: defineTable({
+    address: v.string(),
+    blockedAt: v.number(),
+  }).index("by_address", ["address"]),
 });
