@@ -3,8 +3,28 @@ import { v } from "convex/values";
 
 export default defineSchema({
   users: defineTable({
+    tokenIdentifier: v.optional(v.string()),
     admin: v.boolean(),
-  }),
+    email: v.optional(v.string()),
+    name: v.optional(v.string()),
+    lastSeenAt: v.optional(v.number()),
+  }).index("by_tokenIdentifier", ["tokenIdentifier"]),
+
+  userEmailAddresses: defineTable({
+    userId: v.id("users"),
+    address: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_address", ["address"]),
+
+  receivedMessageRecipients: defineTable({
+    messageId: v.id("receivedMessages"),
+    address: v.string(),
+    receivedAt: v.number(),
+  })
+    .index("by_messageId", ["messageId"])
+    .index("by_address_and_receivedAt", ["address", "receivedAt"]),
 
   receivedMessages: defineTable({
     resendEmailId: v.string(),

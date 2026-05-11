@@ -1,15 +1,17 @@
-import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { requireAdmin, requireUser } from "./auth";
 import {
   action,
   type ActionCtx,
   internalAction,
   internalMutation,
   internalQuery,
+  type MutationCtx,
   mutation,
   query,
+  type QueryCtx,
 } from "./_generated/server";
 
 const attachmentValidator = v.object({
@@ -38,19 +40,49 @@ const outboundMessageValidator = {
 };
 
 export const listReceived = query({
-  args: { paginationOpts: paginationOptsValidator },
+  args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    return await ctx.db
-      .query("receivedMessages")
-      .withIndex("by_received_at")
-      .order("desc")
-      .paginate(args.paginationOpts);
+    const { user } = await requireUser(ctx);
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    if (addresses.length === 0) {
+      return [];
+    }
+
+    const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
+    const messageIds = new Map<Id<"receivedMessages">, number>();
+    for (const { address } of addresses) {
+      const recipients = await ctx.db
+        .query("receivedMessageRecipients")
+        .withIndex("by_address_and_receivedAt", (q) => q.eq("address", address))
+        .order("desc")
+        .take(limit);
+      for (const recipient of recipients) {
+        messageIds.set(recipient.messageId, recipient.receivedAt);
+      }
+    }
+
+    const messages = [];
+    for (const messageId of messageIds.keys()) {
+      const message = await ctx.db.get("receivedMessages", messageId);
+      if (message !== null) {
+        messages.push(message);
+      }
+    }
+
+    return messages
+      .sort((left, right) => right.receivedAt - left.receivedAt)
+      .slice(0, limit);
   },
 });
 
 export const getReceived = query({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
     const message = await ctx.db.get("receivedMessages", args.messageId);
     if (message === null) {
       return null;
@@ -76,6 +108,8 @@ export const getReceived = query({
 export const blockSenderAndArchive = mutation({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
     const message = await ctx.db.get("receivedMessages", args.messageId);
     if (message === null) {
       return null;
@@ -104,6 +138,7 @@ export const blockSenderAndArchive = mutation({
 export const listBlockedSenders = query({
   args: {},
   handler: async (ctx) => {
+    await requireUser(ctx);
     return await ctx.db
       .query("blockedSenders")
       .withIndex("by_address")
@@ -115,6 +150,7 @@ export const listBlockedSenders = query({
 export const removeBlockedSender = mutation({
   args: { blockedSenderId: v.id("blockedSenders") },
   handler: async (ctx, args) => {
+    await requireUser(ctx);
     await ctx.db.delete("blockedSenders", args.blockedSenderId);
     return null;
   },
@@ -123,16 +159,57 @@ export const removeBlockedSender = mutation({
 export const generateAttachmentUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
+    await requireUser(ctx);
     return await ctx.storage.generateUploadUrl();
+  },
+});
+
+export const backfillReceivedMessageRecipients = mutation({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    const messages = await ctx.db
+      .query("receivedMessages")
+      .withIndex("by_received_at")
+      .order("desc")
+      .take(100);
+    let indexed = 0;
+
+    for (const message of messages) {
+      const existing = await ctx.db
+        .query("receivedMessageRecipients")
+        .withIndex("by_messageId", (q) => q.eq("messageId", message._id))
+        .take(1);
+      if (existing.length > 0) {
+        continue;
+      }
+
+      const recipientAddresses = new Set(
+        [...message.to, ...message.cc, ...message.bcc]
+          .map(normalizeInboundAddress)
+          .filter((address): address is string => address !== null),
+      );
+      for (const address of recipientAddresses) {
+        await ctx.db.insert("receivedMessageRecipients", {
+          messageId: message._id,
+          address,
+          receivedAt: message.receivedAt,
+        });
+        indexed += 1;
+      }
+    }
+
+    return { indexed };
   },
 });
 
 export const getReceivedBody = action({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args): Promise<ReceivedBody> => {
+    const identity = await requireActionIdentity(ctx);
     const target: BodyFetchTarget | null = await ctx.runQuery(
-      internal.emails.getReceivedBodyFetchTarget,
-      args,
+      internal.emails.getReceivedBodyFetchTargetForUser,
+      { ...args, tokenIdentifier: identity.tokenIdentifier },
     );
     if (target === null) {
       throw new Error("Message not found.");
@@ -217,6 +294,38 @@ export const getReceivedBodyFetchTarget = internalQuery({
   },
 });
 
+export const getReceivedBodyFetchTargetForUser = internalQuery({
+  args: {
+    messageId: v.id("receivedMessages"),
+    tokenIdentifier: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", args.tokenIdentifier),
+      )
+      .unique();
+    if (user === null) {
+      return null;
+    }
+
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    const message = await ctx.db.get("receivedMessages", args.messageId);
+    if (message === null) {
+      return null;
+    }
+
+    return {
+      _id: message._id,
+      resendEmailId: message.resendEmailId,
+      bodyHtml: message.bodyHtml,
+      bodyText: message.bodyText,
+      bodyFetchedAt: message.bodyFetchedAt,
+    };
+  },
+});
+
 export const listPendingReceivedBodyFetches = internalQuery({
   args: {},
   handler: async (ctx) => {
@@ -267,6 +376,11 @@ export const sendReply = action({
     ...outboundMessageValidator,
   },
   handler: async (ctx, args) => {
+    const identity = await requireActionIdentity(ctx);
+    await ctx.runQuery(internal.emails.requireMessageAccessForUser, {
+      messageId: args.originalMessageId,
+      tokenIdentifier: identity.tokenIdentifier,
+    });
     const sent = await sendOutboundMessage({
       ctx,
       ...args,
@@ -298,6 +412,7 @@ export const sendReply = action({
 export const sendMessage = action({
   args: outboundMessageValidator,
   handler: async (ctx, args) => {
+    await requireActionIdentity(ctx);
     const sent = await sendOutboundMessage({
       ctx,
       ...args,
@@ -399,7 +514,41 @@ export const storeResendReceivedEmail = internalMutation({
       });
     }
 
+    const recipientAddresses = new Set(
+      [...args.data.to, ...args.data.cc, ...args.data.bcc]
+        .map(normalizeInboundAddress)
+        .filter((address): address is string => address !== null),
+    );
+    for (const address of recipientAddresses) {
+      await ctx.db.insert("receivedMessageRecipients", {
+        messageId,
+        address,
+        receivedAt: Date.parse(args.data.created_at) || Date.now(),
+      });
+    }
+
     return messageId;
+  },
+});
+
+export const requireMessageAccessForUser = internalQuery({
+  args: {
+    messageId: v.id("receivedMessages"),
+    tokenIdentifier: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", args.tokenIdentifier),
+      )
+      .unique();
+    if (user === null) {
+      throw new Error("User not registered");
+    }
+
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    return null;
   },
 });
 
@@ -545,6 +694,47 @@ type ReplyAttachmentInput = {
   contentType?: string;
   contentId?: string;
 };
+
+async function requireActionIdentity(ctx: ActionCtx) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (identity === null) {
+    throw new Error("Not authenticated");
+  }
+
+  return identity;
+}
+
+async function requireMessageAccess(
+  ctx: MutationCtx | QueryCtx,
+  userId: Id<"users">,
+  messageId: Id<"receivedMessages">,
+) {
+  const addresses = await ctx.db
+    .query("userEmailAddresses")
+    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .take(100);
+  const addressSet = new Set(addresses.map((address) => address.address));
+
+  const recipients = await ctx.db
+    .query("receivedMessageRecipients")
+    .withIndex("by_messageId", (q) => q.eq("messageId", messageId))
+    .take(100);
+  if (recipients.some((recipient) => addressSet.has(recipient.address))) {
+    return null;
+  }
+
+  throw new Error("Unauthorized");
+}
+
+function normalizeInboundAddress(value: string) {
+  const bracketedAddress = value.match(/<([^<>]+)>/)?.[1];
+  const address = (bracketedAddress ?? value).trim().toLowerCase();
+  if (!/^[^@\s]+@avlec\.co$/.test(address)) {
+    return null;
+  }
+
+  return address;
+}
 
 async function readStoredAttachmentContent(
   ctx: ActionCtx,

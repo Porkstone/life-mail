@@ -23,6 +23,50 @@ button {
   font: inherit;
 }
 
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(250, 249, 248, 0.92)),
+    #f3f2f1;
+}
+
+.auth-panel {
+  display: grid;
+  width: min(100%, 380px);
+  justify-items: start;
+  gap: 16px;
+  padding: 28px;
+  border: 1px solid #e1dfdd;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.08);
+}
+
+.auth-panel h1 {
+  color: #1f1f1f;
+}
+
+.auth-panel p {
+  color: #616161;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.auth-brand {
+  color: #ffffff;
+  background: #0f6cbd;
+}
+
+.auth-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .mail-shell {
   display: grid;
   grid-template-columns: 64px minmax(320px, 420px) minmax(0, 1fr);
@@ -932,6 +976,131 @@ dd {
   color: #616161;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.admin-address-form {
+  display: grid;
+  max-width: 560px;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.editor-field select {
+  height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #d1d1d1;
+  border-radius: 4px;
+  color: #242424;
+  background: #ffffff;
+  font: inherit;
+}
+
+.domain-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid #d1d1d1;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.domain-input:focus-within {
+  border-color: #0f6cbd;
+}
+
+.domain-input input {
+  border: 0;
+}
+
+.domain-input span {
+  padding: 0 12px;
+  color: #616161;
+  font-size: 14px;
+}
+
+.admin-user-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.index-mail-action {
+  margin-top: 16px;
+}
+
+.admin-user-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr);
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #e1dfdd;
+  border-radius: 6px;
+  background: #fbfbfb;
+}
+
+.admin-user-row h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.admin-user-row p {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.admin-badge {
+  display: inline-flex;
+  margin-top: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #0f6cbd;
+  background: #eaf4ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.address-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: start;
+  gap: 8px;
+}
+
+.address-chip,
+.muted-chip {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.address-chip {
+  color: #242424;
+  background: #eef6ff;
+}
+
+.address-chip button {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #0f6cbd;
+  background: transparent;
+  cursor: pointer;
+}
+
+.address-chip button:hover {
+  background: #d7ebff;
+}
+
+.muted-chip {
+  color: #616161;
+  background: #f0f0f0;
 }
 
 .remove-blocked-sender-action {

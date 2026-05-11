@@ -1,29 +1,93 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, ClipboardEvent, FormEvent } from "react";
-import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import type { ChangeEvent, ClipboardEvent, FormEvent, ReactNode } from "react";
+import { useAction, useConvexAuth, useMutation, useQuery } from "convex/react";
 import {
   Archive,
   Ban,
   File,
   Inbox,
+  LogIn,
+  LogOut,
   Paperclip,
   Settings,
+  Shield,
   SquarePen,
   X,
 } from "lucide-react";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
+import { signIn, signOut, useAuth } from "./shoo";
 
 const PAGE_SIZE = 50;
 type Screen = "inbox" | "reply";
 type Folder = "inbox" | "archive";
 
 export default function App() {
+  const shooAuth = useAuth();
+  const convexAuth = useConvexAuth();
+  const ensureCurrentUser = useMutation(api.auth.ensureCurrentUser);
+  const viewer = useQuery(
+    api.auth.viewer,
+    convexAuth.isAuthenticated ? {} : "skip",
+  );
+
+  useEffect(() => {
+    if (!convexAuth.isAuthenticated) {
+      return;
+    }
+
+    void ensureCurrentUser({});
+  }, [convexAuth.isAuthenticated, ensureCurrentUser]);
+
+  if (shooAuth.isLoading || convexAuth.isLoading) {
+    return <AuthShell title="Loading" detail="Checking your session..." />;
+  }
+
+  if (!shooAuth.isAuthenticated) {
+    return (
+      <AuthShell
+        title="Life Mail"
+        detail="Sign in with Google to open your mailbox."
+        action={
+          <button
+            className="primary-action auth-action"
+            onClick={() => {
+              void signIn();
+            }}
+            type="button"
+          >
+            <LogIn aria-hidden="true" size={18} strokeWidth={2.2} />
+            Sign in
+          </button>
+        }
+      />
+    );
+  }
+
+  if (!convexAuth.isAuthenticated) {
+    return (
+      <AuthShell
+        title="Authentication pending"
+        detail="Convex has not accepted the Shoo token yet. Try signing out and back in if this does not clear."
+        action={
+          <button className="ghost-action" onClick={signOut} type="button">
+            Sign out
+          </button>
+        }
+      />
+    );
+  }
+
+  if (viewer === undefined || viewer?.user === null) {
+    return <AuthShell title="Loading" detail="Preparing your mailbox..." />;
+  }
+
   return (
     <Routes>
       <Route element={<MailScreen />} path="/" />
       <Route element={<SettingsScreen />} path="/settings" />
+      <Route element={<AdminScreen />} path="/admin" />
     </Routes>
   );
 }
@@ -31,11 +95,11 @@ export default function App() {
 function MailScreen() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { results: messages, status } = usePaginatedQuery(
+  const messages = useQuery(
     api.emails.listReceived,
-    {},
-    { initialNumItems: PAGE_SIZE },
+    { limit: PAGE_SIZE },
   );
+  const viewer = useQuery(api.auth.viewer, {});
   const [selectedId, setSelectedId] =
     useState<Id<"receivedMessages"> | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -49,6 +113,10 @@ function MailScreen() {
   >({ status: "idle" });
 
   const filteredMessages = useMemo(() => {
+    if (messages === undefined) {
+      return [];
+    }
+
     const visibleMessages = messages.filter((message) =>
       folder === "archive" ? message.archived === true : message.archived !== true,
     );
@@ -182,6 +250,30 @@ function MailScreen() {
         >
           <Settings aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
+        {viewer?.isAdmin === true ? (
+          <button
+            aria-label="Open admin"
+            className={
+              location.pathname === "/admin" ? "rail-button active" : "rail-button"
+            }
+            onClick={() => {
+              void navigate("/admin");
+            }}
+            title="Admin"
+            type="button"
+          >
+            <Shield aria-hidden="true" size={20} strokeWidth={2.2} />
+          </button>
+        ) : null}
+        <button
+          aria-label="Sign out"
+          className="rail-button"
+          onClick={signOut}
+          title="Sign out"
+          type="button"
+        >
+          <LogOut aria-hidden="true" size={20} strokeWidth={2.2} />
+        </button>
       </aside>
 
       <section className="message-list" aria-label="Received messages">
@@ -216,14 +308,14 @@ function MailScreen() {
         />
 
         <div className="messages">
-          {status === "LoadingFirstPage" ? (
+          {messages === undefined ? (
             <EmptyState title="Loading inbox" detail="Waiting for Convex..." />
           ) : filteredMessages.length === 0 ? (
             <EmptyState
               title={messages.length === 0 ? "No received mail yet" : "No matches"}
               detail={
                 messages.length === 0
-                  ? "Point a Resend email.received webhook at /resend/webhook."
+                  ? "Ask an administrator to link your avlec.co inbound address."
                   : folder === "archive"
                     ? "Archived messages and blocked senders will appear here."
                     : "Try another sender, subject, or recipient."
@@ -323,6 +415,234 @@ function MailScreen() {
         <ComposePane onClose={() => setIsComposeOpen(false)} />
       ) : null}
     </div>
+  );
+}
+
+function AuthShell({
+  action,
+  detail,
+  title,
+}: {
+  action?: ReactNode;
+  detail: string;
+  title: string;
+}) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-label="Authentication">
+        <div className="brand-mark auth-brand">L</div>
+        <h1>{title}</h1>
+        <p>{detail}</p>
+        {action}
+      </section>
+    </main>
+  );
+}
+
+function AdminScreen() {
+  const navigate = useNavigate();
+  const viewer = useQuery(api.auth.viewer, {});
+  const users = useQuery(api.auth.listUsers, viewer?.isAdmin === true ? {} : "skip");
+  const assignAddress = useMutation(api.auth.assignAddress);
+  const removeAddress = useMutation(api.auth.removeAddress);
+  const backfillRecipients = useMutation(api.emails.backfillReceivedMessageRecipients);
+  const [selectedUserId, setSelectedUserId] = useState<Id<"users"> | "">("");
+  const [addressLocalPart, setAddressLocalPart] = useState("");
+  const [adminState, setAdminState] = useState<
+    | { status: "idle" }
+    | { status: "saving" }
+    | { status: "indexing" }
+    | { status: "indexed"; count: number }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+
+  if (viewer === undefined) {
+    return <AuthShell title="Loading" detail="Checking administrator access..." />;
+  }
+
+  if (viewer === null || viewer.isAdmin !== true) {
+    return <AuthShell title="Unauthorized" detail="Administrator access is required." />;
+  }
+
+  async function handleAssignAddress(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (selectedUserId === "" || addressLocalPart.trim().length === 0) {
+      return;
+    }
+
+    setAdminState({ status: "saving" });
+    try {
+      await assignAddress({
+        userId: selectedUserId,
+        address: `${addressLocalPart.trim()}@avlec.co`,
+      });
+      setAddressLocalPart("");
+      setAdminState({ status: "idle" });
+    } catch (error: unknown) {
+      setAdminState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to assign that inbound address.",
+      });
+    }
+  }
+
+  async function handleBackfillRecipients() {
+    setAdminState({ status: "indexing" });
+    try {
+      const result = await backfillRecipients({});
+      setAdminState({ status: "indexed", count: result.indexed });
+    } catch (error: unknown) {
+      setAdminState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to index existing received mail.",
+      });
+    }
+  }
+
+  return (
+    <main className="settings-screen">
+      <header className="settings-header">
+        <button
+          className="ghost-action"
+          onClick={() => {
+            void navigate("/");
+          }}
+          type="button"
+        >
+          Back
+        </button>
+        <div>
+          <p className="eyebrow">Admin</p>
+          <h1>Inbound addresses</h1>
+        </div>
+      </header>
+
+      <section className="settings-panel" aria-label="Assign inbound address">
+        <div className="settings-panel-header">
+          <div>
+            <p className="eyebrow">avlec.co</p>
+            <h2>Link address</h2>
+          </div>
+        </div>
+
+        <form className="admin-address-form" onSubmit={(event) => void handleAssignAddress(event)}>
+          <label className="editor-field">
+            <span>User</span>
+            <select
+              onChange={(event) =>
+                setSelectedUserId(event.target.value as Id<"users"> | "")
+              }
+              value={selectedUserId}
+            >
+              <option value="">Select a user</option>
+              {(users ?? []).map(({ user }) => (
+                <option key={user._id} value={user._id}>
+                  {user.name ?? user.email ?? user.tokenIdentifier ?? user._id}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="editor-field">
+            <span>Inbound address</span>
+            <div className="domain-input">
+              <input
+                onChange={(event) => setAddressLocalPart(event.target.value)}
+                placeholder="name"
+                type="text"
+                value={addressLocalPart}
+              />
+              <span>@avlec.co</span>
+            </div>
+          </label>
+
+          <button
+            className="primary-action"
+            disabled={
+              selectedUserId === "" ||
+              addressLocalPart.trim().length === 0 ||
+              adminState.status === "saving"
+            }
+            type="submit"
+          >
+            {adminState.status === "saving" ? "Linking..." : "Link address"}
+          </button>
+        </form>
+
+        {adminState.status === "error" ? (
+          <p className="send-status error">{adminState.message}</p>
+        ) : adminState.status === "indexed" ? (
+          <p className="send-status success">
+            Indexed {adminState.count} recipient links.
+          </p>
+        ) : null}
+      </section>
+
+      <section className="settings-panel" aria-label="Users">
+        <div className="settings-panel-header">
+          <div>
+            <p className="eyebrow">Access</p>
+            <h2>Users</h2>
+          </div>
+          <span className="message-count">{users?.length ?? 0}</span>
+        </div>
+        <button
+          className="ghost-action index-mail-action"
+          disabled={adminState.status === "indexing"}
+          onClick={() => {
+            void handleBackfillRecipients();
+          }}
+          type="button"
+        >
+          {adminState.status === "indexing" ? "Indexing..." : "Index existing mail"}
+        </button>
+
+        <div className="admin-user-list">
+          {users === undefined ? (
+            <EmptyState title="Loading users" detail="Waiting for Convex..." />
+          ) : users.length === 0 ? (
+            <EmptyState title="No users yet" detail="Users appear after sign-in." />
+          ) : (
+            users.map(({ addresses, user }) => (
+              <article className="admin-user-row" key={user._id}>
+                <div>
+                  <h3>{user.name ?? user.email ?? "Unnamed user"}</h3>
+                  <p>{user.email ?? user.tokenIdentifier ?? user._id}</p>
+                  {user.admin ? <span className="admin-badge">Admin</span> : null}
+                </div>
+                <div className="address-chip-list">
+                  {addresses.length === 0 ? (
+                    <span className="muted-chip">No inbound addresses</span>
+                  ) : (
+                    addresses.map((address) => (
+                      <span className="address-chip" key={address._id}>
+                        {address.address}
+                        <button
+                          aria-label={`Remove ${address.address}`}
+                          onClick={() => {
+                            void removeAddress({ addressId: address._id });
+                          }}
+                          title="Remove address"
+                          type="button"
+                        >
+                          <X aria-hidden="true" size={14} strokeWidth={2.2} />
+                        </button>
+                      </span>
+                    ))
+                  )}
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
+    </main>
   );
 }
 

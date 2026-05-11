@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@shoojs/react':
+        specifier: ^0.2.2
+        version: 0.2.2(react@19.2.6)
       convex:
         specifier: ^1.36.1
         version: 1.38.0(react@19.2.6)
@@ -505,6 +508,17 @@ packages:
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
+
+  '@shoojs/auth@0.2.2':
+    resolution: {integrity: sha512-9QRduq9jx8lplmMV5ZNnvZu3f4wrTSDKBcrFNPsj7iMW6W9dH0jjulKwo0vCSd8Tfpbq56vN1pyWnN6bCkWf9Q==}
+
+  '@shoojs/react@0.2.2':
+    resolution: {integrity: sha512-RUyjOi12B7CQaaXugPW7QY8Q2KyZqiTFAZV7EjYVYWcjvrO9Kg+TwDjr+Ym94P8mA/FpPRbHOd0uMROdQ5nlmw==}
+    peerDependencies:
+      react: '>=18'
+
+  '@shoojs/types@0.2.2':
+    resolution: {integrity: sha512-/3WxccmCRMy0HC03zvCCrQqUaAeDmArSCabQzveX2VHM0+S53tgDpp37z/YTHKuVsZN2rLggyuL11BjXD22WDg==}
 
   '@tailwindcss/node@4.2.4':
     resolution: {integrity: sha512-Ai7+yQPxz3ddrDQzFfBKdHEVBg0w3Zl83jnjuwxnZOsnH9pGn93QHQtpU0p/8rYWxvbFZHneni6p1BSLK4DkGA==}
@@ -1771,6 +1785,18 @@ snapshots:
   '@rolldown/pluginutils@1.0.0-rc.18': {}
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
+
+  '@shoojs/auth@0.2.2':
+    dependencies:
+      '@shoojs/types': 0.2.2
+
+  '@shoojs/react@0.2.2(react@19.2.6)':
+    dependencies:
+      '@shoojs/auth': 0.2.2
+      '@shoojs/types': 0.2.2
+      react: 19.2.6
+
+  '@shoojs/types@0.2.2': {}
 
   '@tailwindcss/node@4.2.4':
     dependencies:
