@@ -250,6 +250,12 @@ h1 {
   white-space: nowrap;
 }
 
+.message-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .message-subject {
   overflow: hidden;
   font-size: 14px;
@@ -387,16 +393,25 @@ h1 {
   cursor: wait;
 }
 
-.message-block-action {
+.message-row-action {
   width: 28px;
   min-height: 28px;
   opacity: 0;
 }
 
-.message-row:hover .message-block-action,
-.message-row:focus .message-block-action,
-.message-row:focus-within .message-block-action,
-.message-block-action:disabled {
+.message-archive-action {
+  color: #0f6cbd;
+}
+
+.message-archive-action:hover {
+  border-color: #0f6cbd;
+  background: #eaf4ff;
+}
+
+.message-row:hover .message-row-action,
+.message-row:focus .message-row-action,
+.message-row:focus-within .message-row-action,
+.message-row-action:disabled {
   opacity: 1;
 }
 

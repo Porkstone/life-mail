@@ -111,6 +111,11 @@ function MailScreen() {
     | { status: "blocking"; messageId: Id<"receivedMessages"> }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [archiveState, setArchiveState] = useState<
+    | { status: "idle" }
+    | { status: "archiving"; messageId: Id<"receivedMessages"> }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
 
   const filteredMessages = useMemo(() => {
     if (messages === undefined) {
@@ -149,6 +154,7 @@ function MailScreen() {
   );
   const fetchReceivedBody = useAction(api.emails.getReceivedBody);
   const blockSenderAndArchive = useMutation(api.emails.blockSenderAndArchive);
+  const archiveReceived = useMutation(api.emails.archiveReceived);
   const [selectedBody, setSelectedBody] = useState<MessageBodyState>({
     status: "idle",
   });
@@ -203,6 +209,24 @@ function MailScreen() {
           error instanceof Error
             ? error.message
             : "Unable to block this sender.",
+      });
+    }
+  }
+
+  async function handleArchiveMessage(messageId: Id<"receivedMessages">) {
+    setArchiveState({ status: "archiving", messageId });
+    try {
+      await archiveReceived({ messageId });
+      setSelectedId(null);
+      setScreen("inbox");
+      setArchiveState({ status: "idle" });
+    } catch (error: unknown) {
+      setArchiveState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to archive this message.",
       });
     }
   }
@@ -348,22 +372,41 @@ function MailScreen() {
                   <span className="message-sender">
                     {displaySender(message.from)}
                   </span>
-                  <button
-                    aria-label="Block sender and archive message"
-                    className="icon-action block-action message-block-action"
-                    disabled={
-                      blockState.status === "blocking" &&
-                      blockState.messageId === message._id
-                    }
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleBlockSender(message._id);
-                    }}
-                    title="Block sender and archive"
-                    type="button"
-                  >
-                    <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
-                  </button>
+                  <span className="message-row-actions">
+                    <button
+                      aria-label="Archive message"
+                      className="icon-action message-row-action message-archive-action"
+                      disabled={
+                        message.archived === true ||
+                        (archiveState.status === "archiving" &&
+                          archiveState.messageId === message._id)
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleArchiveMessage(message._id);
+                      }}
+                      title="Archive message"
+                      type="button"
+                    >
+                      <Archive aria-hidden="true" size={15} strokeWidth={2.3} />
+                    </button>
+                    <button
+                      aria-label="Block sender and archive message"
+                      className="icon-action block-action message-row-action message-block-action"
+                      disabled={
+                        blockState.status === "blocking" &&
+                        blockState.messageId === message._id
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleBlockSender(message._id);
+                      }}
+                      title="Block sender and archive"
+                      type="button"
+                    >
+                      <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
+                    </button>
+                  </span>
                 </span>
                 <span className="message-subject">{message.subject}</span>
                 <span className="message-meta">
@@ -399,7 +442,11 @@ function MailScreen() {
               <MessagePreview
                 attachments={selected.attachments}
                 blockError={
-                  blockState.status === "error" ? blockState.message : null
+                  archiveState.status === "error"
+                    ? archiveState.message
+                    : blockState.status === "error"
+                      ? blockState.message
+                      : null
                 }
                 bodyState={selectedBody}
                 message={selected.message}

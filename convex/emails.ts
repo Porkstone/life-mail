@@ -135,6 +135,16 @@ export const blockSenderAndArchive = mutation({
   },
 });
 
+export const archiveReceived = mutation({
+  args: { messageId: v.id("receivedMessages") },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    await ctx.db.patch("receivedMessages", args.messageId, { archived: true });
+    return null;
+  },
+});
+
 export const listBlockedSenders = query({
   args: {},
   handler: async (ctx) => {

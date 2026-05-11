@@ -5,6 +5,7 @@ import {
   type QueryCtx,
   query,
 } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 
 const AVLEC_DOMAIN = "avlec.co";
 
@@ -145,6 +146,7 @@ async function ensureUser(ctx: MutationCtx) {
       name: identity.name,
       lastSeenAt: Date.now(),
     });
+    await assignSignupEmailIfAvailable(ctx, existing._id, identity.email);
     return existing;
   }
 
@@ -158,6 +160,8 @@ async function ensureUser(ctx: MutationCtx) {
     name: identity.name,
     lastSeenAt: Date.now(),
   });
+
+  await assignSignupEmailIfAvailable(ctx, userId, identity.email);
 
   return await ctx.db.get("users", userId);
 }
@@ -184,15 +188,54 @@ async function getUserByTokenIdentifier(
 }
 
 function normalizeAvlecAddress(value: string) {
-  const normalized = value.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+$/.test(normalized)) {
-    throw new Error("Enter a valid email address");
-  }
+  const normalized = normalizeEmailAddress(value);
   if (!normalized.endsWith(`@${AVLEC_DOMAIN}`)) {
     throw new Error(`Inbound addresses must use @${AVLEC_DOMAIN}`);
   }
 
   return normalized;
+}
+
+function normalizeEmailAddress(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+$/.test(normalized)) {
+    throw new Error("Enter a valid email address");
+  }
+
+  return normalized;
+}
+
+async function assignSignupEmailIfAvailable(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  email: string | undefined,
+) {
+  if (email === undefined) {
+    return;
+  }
+
+  const existingUserAddress = await ctx.db
+    .query("userEmailAddresses")
+    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .take(1);
+  if (existingUserAddress.length > 0) {
+    return;
+  }
+
+  const address = normalizeEmailAddress(email);
+  const existingAddress = await ctx.db
+    .query("userEmailAddresses")
+    .withIndex("by_address", (q) => q.eq("address", address))
+    .unique();
+  if (existingAddress !== null) {
+    return;
+  }
+
+  await ctx.db.insert("userEmailAddresses", {
+    userId,
+    address,
+    createdAt: Date.now(),
+  });
 }
 
 function displayUser(user: {
