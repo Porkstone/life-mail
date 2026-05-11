@@ -22,6 +22,8 @@ const attachmentValidator = v.object({
 const replyAttachmentValidator = v.object({
   filename: v.string(),
   content: v.string(),
+  contentType: v.optional(v.string()),
+  contentId: v.optional(v.string()),
 });
 
 const outboundMessageValidator = {
@@ -29,6 +31,7 @@ const outboundMessageValidator = {
   cc: v.array(v.string()),
   subject: v.string(),
   text: v.string(),
+  html: v.optional(v.string()),
   attachments: v.array(replyAttachmentValidator),
 };
 
@@ -272,6 +275,7 @@ export const sendReply = action({
         cc: args.cc,
         subject: args.subject,
         text: args.text,
+        html: args.html,
         sentAt: Date.now(),
         resendResponse: sent.responseBody,
       },
@@ -300,6 +304,7 @@ export const sendMessage = action({
         cc: args.cc,
         subject: args.subject,
         text: args.text,
+        html: args.html,
         sentAt: Date.now(),
         resendResponse: sent.responseBody,
       },
@@ -397,6 +402,7 @@ export const storeSentMessage = internalMutation({
     cc: v.array(v.string()),
     subject: v.string(),
     text: v.string(),
+    html: v.optional(v.string()),
     sentAt: v.number(),
     resendResponse: v.string(),
   },
@@ -410,6 +416,7 @@ export const storeSentMessage = internalMutation({
       cc: args.cc,
       subject: args.subject,
       text: args.text,
+      html: args.html,
       sentAt: args.sentAt,
       resendResponse: args.resendResponse,
     });
@@ -426,6 +433,7 @@ async function sendOutboundMessage(args: {
   cc: string[];
   subject: string;
   text: string;
+  html?: string;
   attachments: ReplyAttachmentInput[];
   failureLabel: string;
   originalResendMessageId?: string;
@@ -440,6 +448,13 @@ async function sendOutboundMessage(args: {
     throw new Error("RESEND_FROM_EMAIL is not configured.");
   }
 
+  const attachments = args.attachments.map((attachment) => ({
+    filename: attachment.filename,
+    content: attachment.content,
+    content_type: attachment.contentType,
+    content_id: attachment.contentId,
+  }));
+
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -452,7 +467,8 @@ async function sendOutboundMessage(args: {
       cc: args.cc.length > 0 ? args.cc : undefined,
       subject: args.subject,
       text: args.text,
-      attachments: args.attachments.length > 0 ? args.attachments : undefined,
+      html: args.html !== undefined && args.html.trim().length > 0 ? args.html : undefined,
+      attachments: attachments.length > 0 ? attachments : undefined,
       headers:
         args.originalResendMessageId !== undefined &&
         args.originalResendMessageId.trim().length > 0
@@ -500,6 +516,8 @@ type ReceivedBody = {
 type ReplyAttachmentInput = {
   filename: string;
   content: string;
+  contentType?: string;
+  contentId?: string;
 };
 
 async function fetchReceivedBodyFromResend(

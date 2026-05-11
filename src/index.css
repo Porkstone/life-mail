@@ -662,7 +662,8 @@ dd {
 }
 
 .editor-field input,
-.editor-field textarea {
+.editor-field textarea,
+.inline-body-editor {
   width: 100%;
   border: 1px solid #d1d1d1;
   border-radius: 4px;
@@ -677,16 +678,37 @@ dd {
   padding: 8px 10px;
 }
 
-.editor-field textarea {
+.editor-field textarea,
+.inline-body-editor {
   min-height: 280px;
   padding: 12px;
   resize: vertical;
 }
 
 .editor-field input:focus,
-.editor-field textarea:focus {
+.editor-field textarea:focus,
+.inline-body-editor:focus {
   border-color: #0f6cbd;
   box-shadow: 0 0 0 1px #0f6cbd;
+}
+
+.inline-body-editor {
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.inline-body-editor:empty::before {
+  color: #707070;
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.inline-body-editor img {
+  display: block;
+  max-width: min(100%, 560px);
+  height: auto;
+  margin: 10px 0;
+  border-radius: 4px;
 }
 
 .editor-field input[readonly] {

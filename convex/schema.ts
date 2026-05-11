@@ -51,6 +51,7 @@ export default defineSchema({
     cc: v.array(v.string()),
     subject: v.string(),
     text: v.string(),
+    html: v.optional(v.string()),
     sentAt: v.number(),
     resendResponse: v.string(),
   })

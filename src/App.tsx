@@ -1,5 +1,5 @@
-import { useEffect, useId, useMemo, useState } from "react";
-import type { ChangeEvent, FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, ClipboardEvent, FormEvent } from "react";
 import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import {
   Archive,
@@ -333,6 +333,8 @@ function ComposePane({ onClose }: { onClose: () => void }) {
   const [cc, setCc] = useState("");
   const [subject, setSubject] = useState("");
   const [text, setText] = useState("");
+  const [html, setHtml] = useState("");
+  const [inlineImages, setInlineImages] = useState<InlineImage[]>([]);
   const [attachments, setAttachments] = useState<ReplyAttachment[]>([]);
   const [sendState, setSendState] = useState<
     | { status: "idle" }
@@ -393,16 +395,28 @@ function ComposePane({ onClose }: { onClose: () => void }) {
         cc: parseRecipients(cc),
         subject: subject.trim(),
         text: text.trim(),
-        attachments: attachments.map((attachment) => ({
-          filename: attachment.filename,
-          content: attachment.content,
-        })),
+        html: serializeEditorHtml(html),
+        attachments: attachments
+          .map((attachment) => ({
+            filename: attachment.filename,
+            content: attachment.content,
+          }))
+          .concat(
+            inlineImages.map((image) => ({
+              filename: image.filename,
+              content: image.content,
+              contentType: image.contentType,
+              contentId: image.contentId,
+            })),
+          ),
       });
       setSendState({ status: "sent" });
       setTo("");
       setCc("");
       setSubject("");
       setText("");
+      setHtml("");
+      setInlineImages([]);
       setAttachments([]);
     } catch (error: unknown) {
       setSendState({
@@ -479,14 +493,15 @@ function ComposePane({ onClose }: { onClose: () => void }) {
 
         <label className="editor-field">
           <span>Message</span>
-          <textarea
-            onChange={(event) => {
-              setText(event.target.value);
+          <InlineBodyEditor
+            html={html}
+            onChange={({ html: nextHtml, text: nextText, inlineImages: nextInlineImages }) => {
+              setHtml(nextHtml);
+              setText(nextText);
+              setInlineImages(nextInlineImages);
               resetSendState();
             }}
             placeholder="Write your message"
-            rows={12}
-            value={text}
           />
         </label>
 
@@ -864,6 +879,8 @@ function ReplyScreen({
   const attachmentInputId = useId();
   const [cc, setCc] = useState("");
   const [text, setText] = useState("");
+  const [html, setHtml] = useState("");
+  const [inlineImages, setInlineImages] = useState<InlineImage[]>([]);
   const [attachments, setAttachments] = useState<ReplyAttachment[]>([]);
   const [sendState, setSendState] = useState<
     | { status: "idle" }
@@ -922,13 +939,25 @@ function ReplyScreen({
         cc: parseRecipients(cc),
         subject,
         text: text.trim(),
-        attachments: attachments.map((attachment) => ({
-          filename: attachment.filename,
-          content: attachment.content,
-        })),
+        html: serializeEditorHtml(html),
+        attachments: attachments
+          .map((attachment) => ({
+            filename: attachment.filename,
+            content: attachment.content,
+          }))
+          .concat(
+            inlineImages.map((image) => ({
+              filename: image.filename,
+              content: image.content,
+              contentType: image.contentType,
+              contentId: image.contentId,
+            })),
+          ),
       });
       setSendState({ status: "sent" });
       setText("");
+      setHtml("");
+      setInlineImages([]);
       setCc("");
       setAttachments([]);
     } catch (error: unknown) {
@@ -1004,15 +1033,16 @@ function ReplyScreen({
 
           <label className="editor-field">
             <span>Message</span>
-            <textarea
+            <InlineBodyEditor
               autoFocus
-              onChange={(event) => {
-                setText(event.target.value);
+              html={html}
+              onChange={({ html: nextHtml, text: nextText, inlineImages: nextInlineImages }) => {
+                setHtml(nextHtml);
+                setText(nextText);
+                setInlineImages(nextInlineImages);
                 resetSendState();
               }}
               placeholder="Write your reply"
-              rows={14}
-              value={text}
             />
           </label>
 
@@ -1095,6 +1125,109 @@ type ReplyAttachment = {
   content: string;
   size: number;
 };
+
+type InlineImage = ReplyAttachment & {
+  contentId: string;
+  contentType: string;
+  previewUrl: string;
+};
+
+type InlineBodyEditorChange = {
+  html: string;
+  text: string;
+  inlineImages: InlineImage[];
+};
+
+function InlineBodyEditor({
+  autoFocus = false,
+  html,
+  onChange,
+  placeholder,
+}: {
+  autoFocus?: boolean;
+  html: string;
+  onChange: (change: InlineBodyEditorChange) => void;
+  placeholder: string;
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const inlineImagesRef = useRef<InlineImage[]>([]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor === null || editor.innerHTML === html) {
+      return;
+    }
+
+    editor.innerHTML = html;
+    if (html.trim().length === 0) {
+      inlineImagesRef.current = [];
+    }
+  }, [html]);
+
+  function syncChange() {
+    const editor = editorRef.current;
+    if (editor === null) {
+      return;
+    }
+
+    const usedContentIds = new Set(
+      Array.from(editor.querySelectorAll("img[data-content-id]"))
+        .map((image) => image.getAttribute("data-content-id"))
+        .filter((contentId): contentId is string => contentId !== null),
+    );
+    inlineImagesRef.current = inlineImagesRef.current.filter((image) =>
+      usedContentIds.has(image.contentId),
+    );
+
+    onChange({
+      html: editor.innerHTML,
+      text: editor.innerText,
+      inlineImages: inlineImagesRef.current,
+    });
+  }
+
+  async function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    const pastedImages = Array.from(event.clipboardData.files).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    const text = event.clipboardData.getData("text/plain");
+    if (text.length > 0) {
+      insertHtmlAtSelection(escapeHtml(text).replace(/\r?\n/g, "<br>"));
+    }
+
+    for (const file of pastedImages) {
+      const image = await readInlineImage(file);
+      inlineImagesRef.current = [...inlineImagesRef.current, image];
+      insertHtmlAtSelection(
+        `<img alt="${escapeHtml(file.name)}" data-content-id="${image.contentId}" src="${image.previewUrl}">`,
+      );
+    }
+
+    syncChange();
+  }
+
+  return (
+    <div
+      aria-label={placeholder}
+      className="inline-body-editor"
+      contentEditable
+      data-placeholder={placeholder}
+      onBlur={syncChange}
+      onInput={syncChange}
+      onPaste={(event) => {
+        void handlePaste(event);
+      }}
+      ref={editorRef}
+      role="textbox"
+      spellCheck
+      suppressContentEditableWarning
+      tabIndex={0}
+      {...(autoFocus ? { autoFocus: true } : {})}
+    />
+  );
+}
 
 function MessageBody({ bodyState }: { bodyState: MessageBodyState }) {
   if (bodyState.status === "idle" || bodyState.status === "loading") {
@@ -1196,6 +1329,66 @@ async function readReplyAttachment(file: File): Promise<ReplyAttachment> {
     content: dataUrl.split(",")[1] ?? "",
     size: file.size,
   };
+}
+
+async function readInlineImage(file: File): Promise<InlineImage> {
+  const attachment = await readReplyAttachment(file);
+  const extension = file.name.split(".").pop()?.toLowerCase() || "png";
+
+  return {
+    ...attachment,
+    contentId: `inline-${crypto.randomUUID().replace(/-/g, "")}`,
+    contentType: file.type || `image/${extension}`,
+    previewUrl: `data:${file.type || "image/png"};base64,${attachment.content}`,
+  };
+}
+
+function insertHtmlAtSelection(html: string) {
+  const selection = window.getSelection();
+  if (selection === null || selection.rangeCount === 0) {
+    return;
+  }
+
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  const fragment = range.createContextualFragment(html);
+  const lastChild = fragment.lastChild;
+  range.insertNode(fragment);
+  if (lastChild !== null) {
+    range.setStartAfter(lastChild);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+}
+
+function serializeEditorHtml(html: string) {
+  if (html.trim().length === 0) {
+    return "";
+  }
+
+  const parser = new DOMParser();
+  const document = parser.parseFromString(`<div>${html}</div>`, "text/html");
+  for (const image of Array.from(document.querySelectorAll("img[data-content-id]"))) {
+    const contentId = image.getAttribute("data-content-id");
+    if (contentId === null || contentId.trim().length === 0) {
+      image.remove();
+      continue;
+    }
+
+    image.setAttribute("src", `cid:${contentId}`);
+    image.removeAttribute("data-content-id");
+  }
+
+  return document.body.firstElementChild?.innerHTML ?? "";
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function formatFileSize(size: number) {
