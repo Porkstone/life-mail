@@ -1,6 +1,16 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
+import {
+  Archive,
+  Ban,
+  File,
+  Inbox,
+  Paperclip,
+  Settings,
+  SquarePen,
+  X,
+} from "lucide-react";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
@@ -31,6 +41,7 @@ function MailScreen() {
   const [searchTerm, setSearchTerm] = useState("");
   const [screen, setScreen] = useState<Screen>("inbox");
   const [folder, setFolder] = useState<Folder>("inbox");
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [blockState, setBlockState] = useState<
     | { status: "idle" }
     | { status: "blocking"; messageId: Id<"receivedMessages"> }
@@ -129,7 +140,7 @@ function MailScreen() {
   }
 
   return (
-    <div className="mail-shell">
+    <div className={isComposeOpen ? "mail-shell compose-open" : "mail-shell"}>
       <aside className="folder-rail" aria-label="Mail folders">
         <div className="brand-mark">L</div>
         <button
@@ -142,7 +153,7 @@ function MailScreen() {
           title="Inbox"
           type="button"
         >
-          IN
+          <Inbox aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
         <button
           className={folder === "archive" ? "rail-button active" : "rail-button"}
@@ -154,7 +165,7 @@ function MailScreen() {
           title="Archive"
           type="button"
         >
-          AR
+          <Archive aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
         <button
           aria-label="Open settings"
@@ -169,7 +180,7 @@ function MailScreen() {
           title="Settings"
           type="button"
         >
-          <span aria-hidden="true" className="settings-icon" />
+          <Settings aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
       </aside>
 
@@ -178,7 +189,22 @@ function MailScreen() {
           <div>
             <h1>{folder === "archive" ? "Archive" : "Inbox"}</h1>
           </div>
-          <span className="message-count">{filteredMessages.length}</span>
+          <div className="list-header-actions">
+            <span className="message-count">{filteredMessages.length}</span>
+            <button
+              aria-label="Compose new message"
+              className={
+                isComposeOpen
+                  ? "icon-action compose-action active"
+                  : "icon-action compose-action"
+              }
+              onClick={() => setIsComposeOpen(true)}
+              title="Compose"
+              type="button"
+            >
+              <SquarePen aria-hidden="true" size={18} strokeWidth={2.2} />
+            </button>
+          </div>
         </div>
 
         <input
@@ -244,7 +270,7 @@ function MailScreen() {
                     title="Block sender and archive"
                     type="button"
                   >
-                    <span aria-hidden="true" className="block-icon" />
+                    <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
                   </button>
                 </span>
                 <span className="message-subject">{message.subject}</span>
@@ -292,7 +318,242 @@ function MailScreen() {
           </>
         )}
       </main>
+
+      {isComposeOpen ? (
+        <ComposePane onClose={() => setIsComposeOpen(false)} />
+      ) : null}
     </div>
+  );
+}
+
+function ComposePane({ onClose }: { onClose: () => void }) {
+  const sendMessage = useAction(api.emails.sendMessage);
+  const attachmentInputId = useId();
+  const [to, setTo] = useState("");
+  const [cc, setCc] = useState("");
+  const [subject, setSubject] = useState("");
+  const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<ReplyAttachment[]>([]);
+  const [sendState, setSendState] = useState<
+    | { status: "idle" }
+    | { status: "sending" }
+    | { status: "sent" }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+  const recipients = parseRecipients(to);
+  const canSend =
+    recipients.length > 0 &&
+    subject.trim().length > 0 &&
+    text.trim().length > 0 &&
+    sendState.status !== "sending";
+
+  function resetSendState() {
+    if (sendState.status === "sent" || sendState.status === "error") {
+      setSendState({ status: "idle" });
+    }
+  }
+
+  async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) {
+      return;
+    }
+
+    resetSendState();
+    try {
+      const encodedAttachments = await Promise.all(files.map(readReplyAttachment));
+      setAttachments((current) => [...current, ...encodedAttachments]);
+    } catch (error: unknown) {
+      setSendState({
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Unable to add attachment.",
+      });
+    }
+  }
+
+  function removeAttachment(indexToRemove: number) {
+    resetSendState();
+    setAttachments((current) =>
+      current.filter((_, index) => index !== indexToRemove),
+    );
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSend) {
+      return;
+    }
+
+    setSendState({ status: "sending" });
+    try {
+      await sendMessage({
+        to: recipients,
+        cc: parseRecipients(cc),
+        subject: subject.trim(),
+        text: text.trim(),
+        attachments: attachments.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content,
+        })),
+      });
+      setSendState({ status: "sent" });
+      setTo("");
+      setCc("");
+      setSubject("");
+      setText("");
+      setAttachments([]);
+    } catch (error: unknown) {
+      setSendState({
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Unable to send message.",
+      });
+    }
+  }
+
+  return (
+    <aside className="compose-pane" aria-label="Compose new message">
+      <form
+        className="reply-editor compose-editor"
+        onSubmit={(event) => {
+          void handleSubmit(event);
+        }}
+      >
+        <header className="compose-header">
+          <div>
+            <p className="eyebrow">Compose</p>
+            <h2>New message</h2>
+          </div>
+          <button
+            aria-label="Close compose"
+            className="icon-action close-compose-action"
+            onClick={onClose}
+            title="Close"
+            type="button"
+          >
+            <X aria-hidden="true" size={18} strokeWidth={2.2} />
+          </button>
+        </header>
+
+        <label className="editor-field">
+          <span>To</span>
+          <input
+            autoFocus
+            onChange={(event) => {
+              setTo(event.target.value);
+              resetSendState();
+            }}
+            placeholder="name@example.com"
+            type="text"
+            value={to}
+          />
+        </label>
+
+        <label className="editor-field">
+          <span>Cc</span>
+          <input
+            onChange={(event) => {
+              setCc(event.target.value);
+              resetSendState();
+            }}
+            placeholder="Add recipients"
+            type="text"
+            value={cc}
+          />
+        </label>
+
+        <label className="editor-field">
+          <span>Subject</span>
+          <input
+            onChange={(event) => {
+              setSubject(event.target.value);
+              resetSendState();
+            }}
+            placeholder="Subject"
+            type="text"
+            value={subject}
+          />
+        </label>
+
+        <label className="editor-field">
+          <span>Message</span>
+          <textarea
+            onChange={(event) => {
+              setText(event.target.value);
+              resetSendState();
+            }}
+            placeholder="Write your message"
+            rows={12}
+            value={text}
+          />
+        </label>
+
+        <section className="reply-attachments" aria-label="Message attachments">
+          <div className="attachment-toolbar">
+            <label className="ghost-action attachment-picker" htmlFor={attachmentInputId}>
+              <Paperclip aria-hidden="true" size={16} strokeWidth={2.2} />
+              Attach files
+            </label>
+            <input
+              className="visually-hidden"
+              id={attachmentInputId}
+              multiple
+              onChange={(event) => {
+                void handleAttachmentChange(event);
+              }}
+              type="file"
+            />
+            {attachments.length > 0 ? (
+              <span className="attachment-summary">
+                {attachments.length} file{attachments.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+          </div>
+
+          {attachments.length > 0 ? (
+            <div className="reply-attachment-list">
+              {attachments.map((attachment, index) => (
+                <div className="reply-attachment-item" key={`${attachment.filename}-${index}`}>
+                  <span className="file-icon">
+                    <File aria-hidden="true" size={22} strokeWidth={2} />
+                  </span>
+                  <div>
+                    <p>{attachment.filename}</p>
+                    <span>{formatFileSize(attachment.size)}</span>
+                  </div>
+                  <button
+                    aria-label={`Remove ${attachment.filename}`}
+                    className="remove-attachment"
+                    onClick={() => removeAttachment(index)}
+                    title="Remove attachment"
+                    type="button"
+                  >
+                    <X aria-hidden="true" size={16} strokeWidth={2.2} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+
+        <div className="editor-actions">
+          <button className="primary-action" disabled={!canSend} type="submit">
+            {sendState.status === "sending" ? "Sending..." : "Send"}
+          </button>
+          <button className="ghost-action" onClick={onClose} type="button">
+            Cancel
+          </button>
+        </div>
+
+        {sendState.status === "sent" ? (
+          <p className="send-status success">Message sent.</p>
+        ) : sendState.status === "error" ? (
+          <p className="send-status error">{sendState.message}</p>
+        ) : null}
+      </form>
+    </aside>
   );
 }
 
@@ -406,7 +667,7 @@ function SettingsScreen() {
                     title="Remove blocked sender"
                     type="button"
                   >
-                    <span aria-hidden="true" className="remove-icon" />
+                    <X aria-hidden="true" size={16} strokeWidth={2.2} />
                   </button>
                 </div>
               </div>
@@ -515,7 +776,9 @@ function MessagePreview({
           <div className="attachment-list">
             {attachments.map((attachment) => (
               <div className="attachment-item" key={attachment._id}>
-                <span className="file-icon">FILE</span>
+                <span className="file-icon">
+                  <File aria-hidden="true" size={22} strokeWidth={2} />
+                </span>
                 <div>
                   <p>{attachment.filename}</p>
                   <span>
@@ -756,6 +1019,7 @@ function ReplyScreen({
           <section className="reply-attachments" aria-label="Reply attachments">
             <div className="attachment-toolbar">
               <label className="ghost-action attachment-picker" htmlFor={attachmentInputId}>
+                <Paperclip aria-hidden="true" size={16} strokeWidth={2.2} />
                 Attach files
               </label>
               <input
@@ -778,7 +1042,9 @@ function ReplyScreen({
               <div className="reply-attachment-list">
                 {attachments.map((attachment, index) => (
                   <div className="reply-attachment-item" key={`${attachment.filename}-${index}`}>
-                    <span className="file-icon">FILE</span>
+                    <span className="file-icon">
+                      <File aria-hidden="true" size={22} strokeWidth={2} />
+                    </span>
                     <div>
                       <p>{attachment.filename}</p>
                       <span>{formatFileSize(attachment.size)}</span>
@@ -790,7 +1056,7 @@ function ReplyScreen({
                       title="Remove attachment"
                       type="button"
                     >
-                      x
+                      <X aria-hidden="true" size={16} strokeWidth={2.2} />
                     </button>
                   </div>
                 ))}

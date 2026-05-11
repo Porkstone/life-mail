@@ -44,7 +44,7 @@ export default defineSchema({
 
   sentMessages: defineTable({
     resendEmailId: v.string(),
-    originalMessageId: v.id("receivedMessages"),
+    originalMessageId: v.optional(v.id("receivedMessages")),
     originalResendMessageId: v.string(),
     from: v.string(),
     to: v.array(v.string()),

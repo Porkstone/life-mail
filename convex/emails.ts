@@ -24,6 +24,14 @@ const replyAttachmentValidator = v.object({
   content: v.string(),
 });
 
+const outboundMessageValidator = {
+  to: v.array(v.string()),
+  cc: v.array(v.string()),
+  subject: v.string(),
+  text: v.string(),
+  attachments: v.array(replyAttachmentValidator),
+};
+
 export const listReceived = query({
   args: { paginationOpts: paginationOptsValidator },
   handler: async (ctx, args) => {
@@ -244,77 +252,56 @@ export const sendReply = action({
   args: {
     originalMessageId: v.id("receivedMessages"),
     originalResendMessageId: v.string(),
-    to: v.array(v.string()),
-    cc: v.array(v.string()),
-    subject: v.string(),
-    text: v.string(),
-    attachments: v.array(replyAttachmentValidator),
+    ...outboundMessageValidator,
   },
   handler: async (ctx, args) => {
-    const apiKey = process.env.RESEND_API_KEY;
-    if (apiKey === undefined) {
-      throw new Error("RESEND_API_KEY is not configured.");
-    }
-
-    const from = process.env.RESEND_FROM_EMAIL;
-    if (from === undefined) {
-      throw new Error("RESEND_FROM_EMAIL is not configured.");
-    }
-
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to: args.to,
-        cc: args.cc.length > 0 ? args.cc : undefined,
-        subject: args.subject,
-        text: args.text,
-        attachments:
-          args.attachments.length > 0 ? args.attachments : undefined,
-        headers:
-          args.originalResendMessageId.trim().length > 0
-            ? {
-                "In-Reply-To": args.originalResendMessageId,
-                References: args.originalResendMessageId,
-              }
-            : undefined,
-      }),
+    const sent = await sendOutboundMessage({
+      ...args,
+      failureLabel: "reply",
+      originalResendMessageId: args.originalResendMessageId,
     });
-
-    const responseBody = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `Resend returned ${response.status} while sending the reply.${
-          responseBody.length > 0 ? ` ${responseBody}` : ""
-        }`,
-      );
-    }
-
-    let resendEmailId = "";
-    try {
-      const sent = JSON.parse(responseBody) as { id?: string };
-      resendEmailId = sent.id ?? "";
-    } catch {
-      resendEmailId = "";
-    }
 
     const sentMessageId: Id<"sentMessages"> = await ctx.runMutation(
       internal.emails.storeSentMessage,
       {
-        resendEmailId,
+        resendEmailId: sent.resendEmailId,
         originalMessageId: args.originalMessageId,
         originalResendMessageId: args.originalResendMessageId,
-        from,
+        from: sent.from,
         to: args.to,
         cc: args.cc,
         subject: args.subject,
         text: args.text,
         sentAt: Date.now(),
-        resendResponse: responseBody,
+        resendResponse: sent.responseBody,
+      },
+    );
+
+    return sentMessageId;
+  },
+});
+
+export const sendMessage = action({
+  args: outboundMessageValidator,
+  handler: async (ctx, args) => {
+    const sent = await sendOutboundMessage({
+      ...args,
+      failureLabel: "message",
+    });
+
+    const sentMessageId: Id<"sentMessages"> = await ctx.runMutation(
+      internal.emails.storeSentMessage,
+      {
+        resendEmailId: sent.resendEmailId,
+        originalMessageId: undefined,
+        originalResendMessageId: "",
+        from: sent.from,
+        to: args.to,
+        cc: args.cc,
+        subject: args.subject,
+        text: args.text,
+        sentAt: Date.now(),
+        resendResponse: sent.responseBody,
       },
     );
 
@@ -403,7 +390,7 @@ export const storeResendReceivedEmail = internalMutation({
 export const storeSentMessage = internalMutation({
   args: {
     resendEmailId: v.string(),
-    originalMessageId: v.id("receivedMessages"),
+    originalMessageId: v.optional(v.id("receivedMessages")),
     originalResendMessageId: v.string(),
     from: v.string(),
     to: v.array(v.string()),
@@ -434,6 +421,69 @@ function normalizeSenderAddress(from: string) {
   return (bracketedAddress ?? from).trim().toLowerCase();
 }
 
+async function sendOutboundMessage(args: {
+  to: string[];
+  cc: string[];
+  subject: string;
+  text: string;
+  attachments: ReplyAttachmentInput[];
+  failureLabel: string;
+  originalResendMessageId?: string;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (apiKey === undefined) {
+    throw new Error("RESEND_API_KEY is not configured.");
+  }
+
+  const from = process.env.RESEND_FROM_EMAIL;
+  if (from === undefined) {
+    throw new Error("RESEND_FROM_EMAIL is not configured.");
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: args.to,
+      cc: args.cc.length > 0 ? args.cc : undefined,
+      subject: args.subject,
+      text: args.text,
+      attachments: args.attachments.length > 0 ? args.attachments : undefined,
+      headers:
+        args.originalResendMessageId !== undefined &&
+        args.originalResendMessageId.trim().length > 0
+          ? {
+              "In-Reply-To": args.originalResendMessageId,
+              References: args.originalResendMessageId,
+            }
+          : undefined,
+    }),
+  });
+
+  const responseBody = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Resend returned ${response.status} while sending the ${
+        args.failureLabel
+      }.${responseBody.length > 0 ? ` ${responseBody}` : ""}`,
+    );
+  }
+
+  let resendEmailId = "";
+  try {
+    const sent = JSON.parse(responseBody) as { id?: string };
+    resendEmailId = sent.id ?? "";
+  } catch {
+    resendEmailId = "";
+  }
+
+  return { from, resendEmailId, responseBody };
+}
+
 type BodyFetchTarget = {
   _id: Id<"receivedMessages">;
   resendEmailId: string;
@@ -445,6 +495,11 @@ type BodyFetchTarget = {
 type ReceivedBody = {
   html: string | null;
   text: string | null;
+};
+
+type ReplyAttachmentInput = {
+  filename: string;
+  content: string;
 };
 
 async function fetchReceivedBodyFromResend(
