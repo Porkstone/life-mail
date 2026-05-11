@@ -328,6 +328,9 @@ function MailScreen() {
 
 function ComposePane({ onClose }: { onClose: () => void }) {
   const sendMessage = useAction(api.emails.sendMessage);
+  const generateAttachmentUploadUrl = useMutation(
+    api.emails.generateAttachmentUploadUrl,
+  );
   const attachmentInputId = useId();
   const [to, setTo] = useState("");
   const [cc, setCc] = useState("");
@@ -364,7 +367,11 @@ function ComposePane({ onClose }: { onClose: () => void }) {
 
     resetSendState();
     try {
-      const encodedAttachments = await Promise.all(files.map(readReplyAttachment));
+      const encodedAttachments = await Promise.all(
+        files.map((file) =>
+          uploadReplyAttachment(file, generateAttachmentUploadUrl),
+        ),
+      );
       setAttachments((current) => [...current, ...encodedAttachments]);
     } catch (error: unknown) {
       setSendState({
@@ -396,19 +403,19 @@ function ComposePane({ onClose }: { onClose: () => void }) {
         subject: subject.trim(),
         text: text.trim(),
         html: serializeEditorHtml(html),
-        attachments: attachments
-          .map((attachment) => ({
+        attachments: [
+          ...attachments.map((attachment) => ({
             filename: attachment.filename,
-            content: attachment.content,
-          }))
-          .concat(
-            inlineImages.map((image) => ({
-              filename: image.filename,
-              content: image.content,
-              contentType: image.contentType,
-              contentId: image.contentId,
-            })),
-          ),
+            storageId: attachment.storageId,
+            contentType: attachment.contentType,
+          })),
+          ...inlineImages.map((image) => ({
+            filename: image.filename,
+            content: image.content,
+            contentType: image.contentType,
+            contentId: image.contentId,
+          })),
+        ] satisfies OutboundAttachment[],
       });
       setSendState({ status: "sent" });
       setTo("");
@@ -876,6 +883,9 @@ function ReplyScreen({
   onBack: () => void;
 }) {
   const sendReply = useAction(api.emails.sendReply);
+  const generateAttachmentUploadUrl = useMutation(
+    api.emails.generateAttachmentUploadUrl,
+  );
   const attachmentInputId = useId();
   const [cc, setCc] = useState("");
   const [text, setText] = useState("");
@@ -906,7 +916,11 @@ function ReplyScreen({
 
     resetSendState();
     try {
-      const encodedAttachments = await Promise.all(files.map(readReplyAttachment));
+      const encodedAttachments = await Promise.all(
+        files.map((file) =>
+          uploadReplyAttachment(file, generateAttachmentUploadUrl),
+        ),
+      );
       setAttachments((current) => [...current, ...encodedAttachments]);
     } catch (error: unknown) {
       setSendState({
@@ -940,19 +954,19 @@ function ReplyScreen({
         subject,
         text: text.trim(),
         html: serializeEditorHtml(html),
-        attachments: attachments
-          .map((attachment) => ({
+        attachments: [
+          ...attachments.map((attachment) => ({
             filename: attachment.filename,
-            content: attachment.content,
-          }))
-          .concat(
-            inlineImages.map((image) => ({
-              filename: image.filename,
-              content: image.content,
-              contentType: image.contentType,
-              contentId: image.contentId,
-            })),
-          ),
+            storageId: attachment.storageId,
+            contentType: attachment.contentType,
+          })),
+          ...inlineImages.map((image) => ({
+            filename: image.filename,
+            content: image.content,
+            contentType: image.contentType,
+            contentId: image.contentId,
+          })),
+        ] satisfies OutboundAttachment[],
       });
       setSendState({ status: "sent" });
       setText("");
@@ -1122,14 +1136,26 @@ type MessageBodyState =
 
 type ReplyAttachment = {
   filename: string;
-  content: string;
+  storageId: Id<"_storage">;
+  contentType?: string;
   size: number;
 };
 
-type InlineImage = ReplyAttachment & {
+type InlineImage = {
+  filename: string;
+  content: string;
+  size: number;
   contentId: string;
   contentType: string;
   previewUrl: string;
+};
+
+type OutboundAttachment = {
+  filename: string;
+  content?: string;
+  storageId?: Id<"_storage">;
+  contentType?: string;
+  contentId?: string;
 };
 
 type InlineBodyEditorChange = {
@@ -1308,7 +1334,33 @@ function parseRecipients(value: string) {
     .filter(Boolean);
 }
 
-async function readReplyAttachment(file: File): Promise<ReplyAttachment> {
+async function uploadReplyAttachment(
+  file: File,
+  generateUploadUrl: () => Promise<string>,
+): Promise<ReplyAttachment> {
+  const uploadUrl = await generateUploadUrl();
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+    },
+    body: file,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to upload ${file.name}.`);
+  }
+
+  const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
+  return {
+    filename: file.name,
+    storageId,
+    contentType: file.type || undefined,
+    size: file.size,
+  };
+}
+
+async function readReplyAttachmentContent(file: File) {
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.addEventListener("load", () => {
@@ -1324,22 +1376,20 @@ async function readReplyAttachment(file: File): Promise<ReplyAttachment> {
     reader.readAsDataURL(file);
   });
 
-  return {
-    filename: file.name,
-    content: dataUrl.split(",")[1] ?? "",
-    size: file.size,
-  };
+  return dataUrl.split(",")[1] ?? "";
 }
 
 async function readInlineImage(file: File): Promise<InlineImage> {
-  const attachment = await readReplyAttachment(file);
+  const content = await readReplyAttachmentContent(file);
   const extension = file.name.split(".").pop()?.toLowerCase() || "png";
 
   return {
-    ...attachment,
+    filename: file.name,
+    content,
+    size: file.size,
     contentId: `inline-${crypto.randomUUID().replace(/-/g, "")}`,
     contentType: file.type || `image/${extension}`,
-    previewUrl: `data:${file.type || "image/png"};base64,${attachment.content}`,
+    previewUrl: `data:${file.type || "image/png"};base64,${content}`,
   };
 }
 

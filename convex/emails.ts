@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   action,
+  type ActionCtx,
   internalAction,
   internalMutation,
   internalQuery,
@@ -21,7 +22,8 @@ const attachmentValidator = v.object({
 
 const replyAttachmentValidator = v.object({
   filename: v.string(),
-  content: v.string(),
+  content: v.optional(v.string()),
+  storageId: v.optional(v.id("_storage")),
   contentType: v.optional(v.string()),
   contentId: v.optional(v.string()),
 });
@@ -115,6 +117,13 @@ export const removeBlockedSender = mutation({
   handler: async (ctx, args) => {
     await ctx.db.delete("blockedSenders", args.blockedSenderId);
     return null;
+  },
+});
+
+export const generateAttachmentUploadUrl = mutation({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.storage.generateUploadUrl();
   },
 });
 
@@ -259,6 +268,7 @@ export const sendReply = action({
   },
   handler: async (ctx, args) => {
     const sent = await sendOutboundMessage({
+      ctx,
       ...args,
       failureLabel: "reply",
       originalResendMessageId: args.originalResendMessageId,
@@ -289,6 +299,7 @@ export const sendMessage = action({
   args: outboundMessageValidator,
   handler: async (ctx, args) => {
     const sent = await sendOutboundMessage({
+      ctx,
       ...args,
       failureLabel: "message",
     });
@@ -429,6 +440,7 @@ function normalizeSenderAddress(from: string) {
 }
 
 async function sendOutboundMessage(args: {
+  ctx: ActionCtx;
   to: string[];
   cc: string[];
   subject: string;
@@ -448,12 +460,25 @@ async function sendOutboundMessage(args: {
     throw new Error("RESEND_FROM_EMAIL is not configured.");
   }
 
-  const attachments = args.attachments.map((attachment) => ({
-    filename: attachment.filename,
-    content: attachment.content,
-    content_type: attachment.contentType,
-    content_id: attachment.contentId,
-  }));
+  const attachments = await Promise.all(
+    args.attachments.map(async (attachment) => {
+      const content =
+        attachment.content ??
+        (attachment.storageId === undefined
+          ? null
+          : await readStoredAttachmentContent(args.ctx, attachment.storageId));
+      if (content === null) {
+        throw new Error(`Unable to read ${attachment.filename}.`);
+      }
+
+      return {
+        filename: attachment.filename,
+        content,
+        content_type: attachment.contentType,
+        content_id: attachment.contentId,
+      };
+    }),
+  );
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -515,10 +540,34 @@ type ReceivedBody = {
 
 type ReplyAttachmentInput = {
   filename: string;
-  content: string;
+  content?: string;
+  storageId?: Id<"_storage">;
   contentType?: string;
   contentId?: string;
 };
+
+async function readStoredAttachmentContent(
+  ctx: ActionCtx,
+  storageId: Id<"_storage">,
+) {
+  const blob = await ctx.storage.get(storageId);
+  if (blob === null) {
+    return null;
+  }
+
+  return arrayBufferToBase64(await blob.arrayBuffer());
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+
+  return btoa(binary);
+}
 
 async function fetchReceivedBodyFromResend(
   resendEmailId: string,
