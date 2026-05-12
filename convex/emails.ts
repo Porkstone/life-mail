@@ -252,6 +252,24 @@ export const getReceivedBody = action({
   },
 });
 
+export const getReceivedAttachmentDownload = action({
+  args: {
+    attachmentId: v.id("receivedMessageAttachments"),
+  },
+  handler: async (ctx, args): Promise<ReceivedAttachmentDownload> => {
+    const identity = await requireActionIdentity(ctx);
+    const target: AttachmentFetchTarget | null = await ctx.runQuery(
+      internal.emails.getReceivedAttachmentFetchTargetForUser,
+      { ...args, tokenIdentifier: identity.tokenIdentifier },
+    );
+    if (target === null) {
+      throw new Error("Attachment not found.");
+    }
+
+    return await fetchReceivedAttachmentDownloadFromResend(target);
+  },
+});
+
 export const fetchPendingReceivedBodies = internalAction({
   args: {},
   handler: async (ctx): Promise<{ fetched: number; failed: number }> => {
@@ -283,6 +301,42 @@ export const fetchPendingReceivedBodies = internalAction({
     }
 
     return { fetched, failed };
+  },
+});
+
+export const getReceivedAttachmentFetchTargetForUser = internalQuery({
+  args: {
+    attachmentId: v.id("receivedMessageAttachments"),
+    tokenIdentifier: v.string(),
+  },
+  handler: async (ctx, args): Promise<AttachmentFetchTarget | null> => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", args.tokenIdentifier),
+      )
+      .unique();
+    if (user === null) {
+      return null;
+    }
+
+    const attachment = await ctx.db.get(args.attachmentId);
+    if (attachment === null) {
+      return null;
+    }
+
+    await requireMessageAccess(ctx, user._id, attachment.messageId);
+    const message = await ctx.db.get(attachment.messageId);
+    if (message === null) {
+      return null;
+    }
+
+    return {
+      attachmentId: attachment.resendAttachmentId,
+      contentType: attachment.contentType,
+      emailId: message.resendEmailId,
+      filename: attachment.filename,
+    };
   },
 });
 
@@ -651,7 +705,10 @@ async function sendOutboundMessage(args: {
       cc: args.cc.length > 0 ? args.cc : undefined,
       subject: args.subject,
       text: args.text,
-      html: args.html !== undefined && args.html.trim().length > 0 ? args.html : undefined,
+      html:
+        args.html !== undefined && args.html.trim().length > 0
+          ? args.html
+          : undefined,
       attachments: attachments.length > 0 ? attachments : undefined,
       headers:
         args.originalResendMessageId !== undefined &&
@@ -695,6 +752,20 @@ type BodyFetchTarget = {
 type ReceivedBody = {
   html: string | null;
   text: string | null;
+};
+
+type AttachmentFetchTarget = {
+  attachmentId: string;
+  contentType: string;
+  emailId: string;
+  filename: string;
+};
+
+type ReceivedAttachmentDownload = {
+  downloadUrl: string;
+  expiresAt: string | null;
+  filename: string;
+  contentType: string;
 };
 
 type ReplyAttachmentInput = {
@@ -805,5 +876,71 @@ async function fetchReceivedBodyFromResend(
   return {
     html: email.html ?? null,
     text: email.text ?? null,
+  };
+}
+
+async function fetchReceivedAttachmentDownloadFromResend(
+  target: AttachmentFetchTarget,
+): Promise<ReceivedAttachmentDownload> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (apiKey === undefined) {
+    throw new Error("RESEND_API_KEY is not configured.");
+  }
+
+  const response = await fetch(
+    `https://api.resend.com/emails/receiving/${encodeURIComponent(
+      target.emailId,
+    )}/attachments`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    },
+  );
+
+  const responseBody = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Resend returned ${response.status} while fetching the attachment.${
+        responseBody.length > 0 ? ` ${responseBody}` : ""
+      }`,
+    );
+  }
+
+  const parsed = JSON.parse(responseBody) as
+    | Array<{
+        id?: string;
+        download_url?: string;
+        expires_at?: string | null;
+        filename?: string;
+        content_type?: string;
+      }>
+    | {
+        data?: Array<{
+          id?: string;
+          download_url?: string;
+          expires_at?: string | null;
+          filename?: string;
+          content_type?: string;
+        }>;
+      };
+  const attachments = Array.isArray(parsed) ? parsed : (parsed.data ?? []);
+  const attachment = attachments.find(
+    (candidate) => candidate.id === target.attachmentId,
+  );
+  if (attachment === undefined) {
+    throw new Error("Resend did not return this attachment.");
+  }
+  if (attachment.download_url === undefined) {
+    throw new Error(
+      "Resend did not return a download URL for this attachment.",
+    );
+  }
+
+  return {
+    downloadUrl: attachment.download_url,
+    expiresAt: attachment.expires_at ?? null,
+    filename: attachment.filename ?? target.filename,
+    contentType: attachment.content_type ?? target.contentType,
   };
 }

@@ -4,6 +4,8 @@ import { useAction, useConvexAuth, useMutation, useQuery } from "convex/react";
 import {
   Archive,
   Ban,
+  Download,
+  Eye,
   File,
   Inbox,
   LogIn,
@@ -95,13 +97,11 @@ export default function App() {
 function MailScreen() {
   const navigate = useNavigate();
   const location = useLocation();
-  const messages = useQuery(
-    api.emails.listReceived,
-    { limit: PAGE_SIZE },
-  );
+  const messages = useQuery(api.emails.listReceived, { limit: PAGE_SIZE });
   const viewer = useQuery(api.auth.viewer, {});
-  const [selectedId, setSelectedId] =
-    useState<Id<"receivedMessages"> | null>(null);
+  const [selectedId, setSelectedId] = useState<Id<"receivedMessages"> | null>(
+    null,
+  );
   const [searchTerm, setSearchTerm] = useState("");
   const [screen, setScreen] = useState<Screen>("inbox");
   const [folder, setFolder] = useState<Folder>("inbox");
@@ -123,7 +123,9 @@ function MailScreen() {
     }
 
     const visibleMessages = messages.filter((message) =>
-      folder === "archive" ? message.archived === true : message.archived !== true,
+      folder === "archive"
+        ? message.archived === true
+        : message.archived !== true,
     );
     const normalizedSearch = searchTerm.trim().toLowerCase();
     if (normalizedSearch.length === 0) {
@@ -144,10 +146,11 @@ function MailScreen() {
     );
   }, [folder, messages, searchTerm]);
 
-  const selectedMessageId =
-    filteredMessages.some((message) => message._id === selectedId)
-      ? selectedId
-      : filteredMessages[0]?._id ?? null;
+  const selectedMessageId = filteredMessages.some(
+    (message) => message._id === selectedId,
+  )
+    ? selectedId
+    : (filteredMessages[0]?._id ?? null);
   const selected = useQuery(
     api.emails.getReceived,
     selectedMessageId === null ? "skip" : { messageId: selectedMessageId },
@@ -248,7 +251,9 @@ function MailScreen() {
           <Inbox aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
         <button
-          className={folder === "archive" ? "rail-button active" : "rail-button"}
+          className={
+            folder === "archive" ? "rail-button active" : "rail-button"
+          }
           onClick={() => {
             setFolder("archive");
             setSelectedId(null);
@@ -278,7 +283,9 @@ function MailScreen() {
           <button
             aria-label="Open admin"
             className={
-              location.pathname === "/admin" ? "rail-button active" : "rail-button"
+              location.pathname === "/admin"
+                ? "rail-button active"
+                : "rail-button"
             }
             onClick={() => {
               void navigate("/admin");
@@ -336,7 +343,9 @@ function MailScreen() {
             <EmptyState title="Loading inbox" detail="Waiting for Convex..." />
           ) : filteredMessages.length === 0 ? (
             <EmptyState
-              title={messages.length === 0 ? "No received mail yet" : "No matches"}
+              title={
+                messages.length === 0 ? "No received mail yet" : "No matches"
+              }
               detail={
                 messages.length === 0
                   ? "Ask an administrator to link your avlec.co inbound address."
@@ -489,10 +498,15 @@ function AuthShell({
 function AdminScreen() {
   const navigate = useNavigate();
   const viewer = useQuery(api.auth.viewer, {});
-  const users = useQuery(api.auth.listUsers, viewer?.isAdmin === true ? {} : "skip");
+  const users = useQuery(
+    api.auth.listUsers,
+    viewer?.isAdmin === true ? {} : "skip",
+  );
   const assignAddress = useMutation(api.auth.assignAddress);
   const removeAddress = useMutation(api.auth.removeAddress);
-  const backfillRecipients = useMutation(api.emails.backfillReceivedMessageRecipients);
+  const backfillRecipients = useMutation(
+    api.emails.backfillReceivedMessageRecipients,
+  );
   const [selectedUserId, setSelectedUserId] = useState<Id<"users"> | "">("");
   const [addressLocalPart, setAddressLocalPart] = useState("");
   const [adminState, setAdminState] = useState<
@@ -504,11 +518,18 @@ function AdminScreen() {
   >({ status: "idle" });
 
   if (viewer === undefined) {
-    return <AuthShell title="Loading" detail="Checking administrator access..." />;
+    return (
+      <AuthShell title="Loading" detail="Checking administrator access..." />
+    );
   }
 
   if (viewer === null || viewer.isAdmin !== true) {
-    return <AuthShell title="Unauthorized" detail="Administrator access is required." />;
+    return (
+      <AuthShell
+        title="Unauthorized"
+        detail="Administrator access is required."
+      />
+    );
   }
 
   async function handleAssignAddress(event: FormEvent<HTMLFormElement>) {
@@ -578,7 +599,10 @@ function AdminScreen() {
           </div>
         </div>
 
-        <form className="admin-address-form" onSubmit={(event) => void handleAssignAddress(event)}>
+        <form
+          className="admin-address-form"
+          onSubmit={(event) => void handleAssignAddress(event)}
+        >
           <label className="editor-field">
             <span>User</span>
             <select
@@ -647,21 +671,28 @@ function AdminScreen() {
           }}
           type="button"
         >
-          {adminState.status === "indexing" ? "Indexing..." : "Index existing mail"}
+          {adminState.status === "indexing"
+            ? "Indexing..."
+            : "Index existing mail"}
         </button>
 
         <div className="admin-user-list">
           {users === undefined ? (
             <EmptyState title="Loading users" detail="Waiting for Convex..." />
           ) : users.length === 0 ? (
-            <EmptyState title="No users yet" detail="Users appear after sign-in." />
+            <EmptyState
+              title="No users yet"
+              detail="Users appear after sign-in."
+            />
           ) : (
             users.map(({ addresses, user }) => (
               <article className="admin-user-row" key={user._id}>
                 <div>
                   <h3>{user.name ?? user.email ?? "Unnamed user"}</h3>
                   <p>{user.email ?? user.tokenIdentifier ?? user._id}</p>
-                  {user.admin ? <span className="admin-badge">Admin</span> : null}
+                  {user.admin ? (
+                    <span className="admin-badge">Admin</span>
+                  ) : null}
                 </div>
                 <div className="address-chip-list">
                   {addresses.length === 0 ? (
@@ -869,7 +900,11 @@ function ComposePane({ onClose }: { onClose: () => void }) {
           <span>Message</span>
           <InlineBodyEditor
             html={html}
-            onChange={({ html: nextHtml, text: nextText, inlineImages: nextInlineImages }) => {
+            onChange={({
+              html: nextHtml,
+              text: nextText,
+              inlineImages: nextInlineImages,
+            }) => {
               setHtml(nextHtml);
               setText(nextText);
               setInlineImages(nextInlineImages);
@@ -881,7 +916,10 @@ function ComposePane({ onClose }: { onClose: () => void }) {
 
         <section className="reply-attachments" aria-label="Message attachments">
           <div className="attachment-toolbar">
-            <label className="ghost-action attachment-picker" htmlFor={attachmentInputId}>
+            <label
+              className="ghost-action attachment-picker"
+              htmlFor={attachmentInputId}
+            >
               <Paperclip aria-hidden="true" size={16} strokeWidth={2.2} />
               Attach files
             </label>
@@ -904,7 +942,10 @@ function ComposePane({ onClose }: { onClose: () => void }) {
           {attachments.length > 0 ? (
             <div className="reply-attachment-list">
               {attachments.map((attachment, index) => (
-                <div className="reply-attachment-item" key={`${attachment.filename}-${index}`}>
+                <div
+                  className="reply-attachment-item"
+                  key={`${attachment.filename}-${index}`}
+                >
                   <span className="file-icon">
                     <File aria-hidden="true" size={22} strokeWidth={2} />
                   </span>
@@ -1109,10 +1150,63 @@ function MessagePreview({
     resendEmailId: string;
   }>;
 }) {
+  const getAttachmentDownload = useAction(
+    api.emails.getReceivedAttachmentDownload,
+  );
+  const [attachmentState, setAttachmentState] = useState<
+    | { status: "idle" }
+    | {
+        status: "loading";
+        attachmentId: Id<"receivedMessageAttachments">;
+        intent: "download" | "preview";
+      }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
   const recipients = useMemo(
     () => [message.to.join(", "), message.cc.join(", ")].filter(Boolean),
     [message.cc, message.to],
   );
+
+  async function openPdfAttachment(
+    attachment: {
+      _id: Id<"receivedMessageAttachments">;
+      filename: string;
+    },
+    intent: "download" | "preview",
+  ) {
+    setAttachmentState({
+      status: "loading",
+      attachmentId: attachment._id,
+      intent,
+    });
+
+    try {
+      const download = await getAttachmentDownload({
+        attachmentId: attachment._id,
+      });
+      if (intent === "preview") {
+        window.open(download.downloadUrl, "_blank", "noopener,noreferrer");
+      } else {
+        const link = document.createElement("a");
+        link.href = download.downloadUrl;
+        link.download = download.filename || attachment.filename;
+        link.rel = "noopener noreferrer";
+        document.body.append(link);
+        link.click();
+        link.remove();
+      }
+
+      setAttachmentState({ status: "idle" });
+    } catch (error: unknown) {
+      setAttachmentState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to open this attachment.",
+      });
+    }
+  }
 
   return (
     <article className="message-preview">
@@ -1162,20 +1256,62 @@ function MessagePreview({
       {attachments.length > 0 ? (
         <section className="attachment-section">
           <h3>Attachments</h3>
+          {attachmentState.status === "error" ? (
+            <p className="send-status error">{attachmentState.message}</p>
+          ) : null}
           <div className="attachment-list">
-            {attachments.map((attachment) => (
-              <div className="attachment-item" key={attachment._id}>
-                <span className="file-icon">
-                  <File aria-hidden="true" size={22} strokeWidth={2} />
-                </span>
-                <div>
-                  <p>{attachment.filename}</p>
-                  <span>
-                    {attachment.contentType} · {attachment.contentDisposition}
+            {attachments.map((attachment) => {
+              const isPdf = isPdfAttachment(attachment);
+              const isLoading =
+                attachmentState.status === "loading" &&
+                attachmentState.attachmentId === attachment._id;
+
+              return (
+                <div className="attachment-item" key={attachment._id}>
+                  <span className="file-icon">
+                    <File aria-hidden="true" size={22} strokeWidth={2} />
                   </span>
+                  <div className="attachment-details">
+                    <p>{attachment.filename}</p>
+                    <span>
+                      {attachment.contentType} · {attachment.contentDisposition}
+                    </span>
+                  </div>
+                  {isPdf ? (
+                    <div className="attachment-actions">
+                      <button
+                        aria-label={`Preview ${attachment.filename}`}
+                        className="attachment-action"
+                        disabled={isLoading}
+                        onClick={() => {
+                          void openPdfAttachment(attachment, "preview");
+                        }}
+                        title="Preview PDF"
+                        type="button"
+                      >
+                        <Eye aria-hidden="true" size={16} strokeWidth={2.2} />
+                      </button>
+                      <button
+                        aria-label={`Download ${attachment.filename}`}
+                        className="attachment-action"
+                        disabled={isLoading}
+                        onClick={() => {
+                          void openPdfAttachment(attachment, "download");
+                        }}
+                        title="Download PDF"
+                        type="button"
+                      >
+                        <Download
+                          aria-hidden="true"
+                          size={16}
+                          strokeWidth={2.2}
+                        />
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -1417,7 +1553,11 @@ function ReplyScreen({
             <InlineBodyEditor
               autoFocus
               html={html}
-              onChange={({ html: nextHtml, text: nextText, inlineImages: nextInlineImages }) => {
+              onChange={({
+                html: nextHtml,
+                text: nextText,
+                inlineImages: nextInlineImages,
+              }) => {
                 setHtml(nextHtml);
                 setText(nextText);
                 setInlineImages(nextInlineImages);
@@ -1429,7 +1569,10 @@ function ReplyScreen({
 
           <section className="reply-attachments" aria-label="Reply attachments">
             <div className="attachment-toolbar">
-              <label className="ghost-action attachment-picker" htmlFor={attachmentInputId}>
+              <label
+                className="ghost-action attachment-picker"
+                htmlFor={attachmentInputId}
+              >
                 <Paperclip aria-hidden="true" size={16} strokeWidth={2.2} />
                 Attach files
               </label>
@@ -1452,7 +1595,10 @@ function ReplyScreen({
             {attachments.length > 0 ? (
               <div className="reply-attachment-list">
                 {attachments.map((attachment, index) => (
-                  <div className="reply-attachment-item" key={`${attachment.filename}-${index}`}>
+                  <div
+                    className="reply-attachment-item"
+                    key={`${attachment.filename}-${index}`}
+                  >
                     <span className="file-icon">
                       <File aria-hidden="true" size={22} strokeWidth={2} />
                     </span>
@@ -1476,7 +1622,11 @@ function ReplyScreen({
           </section>
 
           <div className="editor-actions">
-            <button className="primary-action" disabled={!canSend} type="submit">
+            <button
+              className="primary-action"
+              disabled={!canSend}
+              type="submit"
+            >
               {sendState.status === "sending" ? "Sending..." : "Send"}
             </button>
             <button className="ghost-action" onClick={onBack} type="button">
@@ -1650,7 +1800,9 @@ function MessageBody({ bodyState }: { bodyState: MessageBodyState }) {
     return <pre className="message-body-text">{bodyState.body.text}</pre>;
   }
 
-  return <section className="notice">This message does not include a body.</section>;
+  return (
+    <section className="notice">This message does not include a body.</section>
+  );
 }
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
@@ -1718,7 +1870,9 @@ async function uploadReplyAttachment(
     throw new Error(`Unable to upload ${file.name}.`);
   }
 
-  const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
+  const { storageId } = (await response.json()) as {
+    storageId: Id<"_storage">;
+  };
   return {
     filename: file.name,
     storageId,
@@ -1786,7 +1940,9 @@ function serializeEditorHtml(html: string) {
 
   const parser = new DOMParser();
   const document = parser.parseFromString(`<div>${html}</div>`, "text/html");
-  for (const image of Array.from(document.querySelectorAll("img[data-content-id]"))) {
+  for (const image of Array.from(
+    document.querySelectorAll("img[data-content-id]"),
+  )) {
     const contentId = image.getAttribute("data-content-id");
     if (contentId === null || contentId.trim().length === 0) {
       image.remove();
@@ -1806,6 +1962,16 @@ function escapeHtml(value: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function isPdfAttachment(attachment: {
+  contentType: string;
+  filename: string;
+}) {
+  return (
+    attachment.contentType.toLowerCase().includes("pdf") ||
+    attachment.filename.toLowerCase().endsWith(".pdf")
+  );
 }
 
 function formatFileSize(size: number) {

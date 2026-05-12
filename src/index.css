@@ -4,7 +4,11 @@
   color: #202124;
   background: #f3f2f1;
   font-family:
-    "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -29,7 +33,11 @@ button {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(250, 249, 248, 0.92)),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.74),
+      rgba(250, 249, 248, 0.92)
+    ),
     #f3f2f1;
 }
 
@@ -76,7 +84,10 @@ button {
 }
 
 .mail-shell.compose-open {
-  grid-template-columns: 64px minmax(300px, 380px) minmax(420px, 1fr) minmax(360px, 34vw);
+  grid-template-columns: 64px minmax(300px, 380px) minmax(420px, 1fr) minmax(
+      360px,
+      34vw
+    );
 }
 
 .folder-rail {
@@ -492,7 +503,10 @@ h1 {
   border-radius: 6px;
   color: #242424;
   background: #ffffff;
-  font: 14px/1.6 "Segoe UI", system-ui, sans-serif;
+  font:
+    14px/1.6 "Segoe UI",
+    system-ui,
+    sans-serif;
   white-space: pre-wrap;
 }
 
@@ -542,7 +556,10 @@ h1 {
   overflow-x: auto;
   margin: 0;
   color: #242424;
-  font: 14px/1.6 "Segoe UI", system-ui, sans-serif;
+  font:
+    14px/1.6 "Segoe UI",
+    system-ui,
+    sans-serif;
   white-space: pre-wrap;
 }
 
@@ -598,8 +615,9 @@ dd {
 }
 
 .attachment-item {
-  display: flex;
+  display: grid;
   min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 12px;
@@ -634,6 +652,40 @@ dd {
   margin-top: 2px;
   color: #616161;
   font-size: 12px;
+}
+
+.attachment-details {
+  min-width: 0;
+}
+
+.attachment-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.attachment-action {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid #d1d1d1;
+  border-radius: 4px;
+  color: #0f6cbd;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.attachment-action:hover {
+  border-color: #0f6cbd;
+  background: #eaf4ff;
+}
+
+.attachment-action:disabled {
+  color: #a6a6a6;
+  background: #f5f5f5;
+  cursor: wait;
 }
 
 .reply-screen {
@@ -728,7 +780,10 @@ dd {
   border-radius: 4px;
   color: #242424;
   background: #ffffff;
-  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+  font:
+    14px/1.5 "Segoe UI",
+    system-ui,
+    sans-serif;
   outline: none;
 }
 
@@ -1171,7 +1226,10 @@ dd {
 
   .mail-shell.compose-open {
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(250px, 34vh) minmax(280px, 34vh) minmax(0, 1fr);
+    grid-template-rows: auto minmax(250px, 34vh) minmax(280px, 34vh) minmax(
+        0,
+        1fr
+      );
   }
 
   .folder-rail {
