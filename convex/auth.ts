@@ -1,11 +1,14 @@
 import { v } from "convex/values";
 import {
+  internalMutation,
   type MutationCtx,
   mutation,
   type QueryCtx,
   query,
 } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+
+type UserDoc = Doc<"users">;
 
 const AVLEC_DOMAIN = "avlec.co";
 
@@ -141,13 +144,37 @@ async function ensureUser(ctx: MutationCtx) {
 
   const existing = await getUserByTokenIdentifier(ctx, identity.tokenIdentifier);
   if (existing !== null) {
+    const normalizedEmail = tryNormalizeEmail(identity.email);
     await ctx.db.patch("users", existing._id, {
-      email: identity.email,
-      name: identity.name,
+      ...(normalizedEmail !== undefined ? { email: normalizedEmail } : {}),
+      ...(identity.name !== undefined ? { name: identity.name } : {}),
       lastSeenAt: Date.now(),
     });
     await assignSignupEmailIfAvailable(ctx, existing._id, identity.email);
-    return existing;
+    return await ctx.db.get("users", existing._id);
+  }
+
+  const normalizedEmail = tryNormalizeEmail(identity.email);
+  if (
+    normalizedEmail !== undefined &&
+    isEmailSafeForAccountLinking(identity)
+  ) {
+    let sameEmail = await getUsersByNormalizedEmail(ctx, normalizedEmail);
+    if (sameEmail.length > 1)
+      await mergeDuplicateUsersInGroup(ctx, sameEmail);
+
+    sameEmail = await getUsersByNormalizedEmail(ctx, normalizedEmail);
+    if (sameEmail.length === 1) {
+      const userRow = sameEmail[0];
+      await ctx.db.patch("users", userRow._id, {
+        tokenIdentifier: identity.tokenIdentifier,
+        email: normalizedEmail,
+        ...(identity.name !== undefined ? { name: identity.name } : {}),
+        lastSeenAt: Date.now(),
+      });
+      await assignSignupEmailIfAvailable(ctx, userRow._id, identity.email);
+      return await ctx.db.get("users", userRow._id);
+    }
   }
 
   const existingUsers = await ctx.db.query("users").take(100);
@@ -156,7 +183,7 @@ async function ensureUser(ctx: MutationCtx) {
     admin:
       existingUsers.length === 0 ||
       existingUsers.every((user) => user.tokenIdentifier === undefined),
-    email: identity.email,
+    email: normalizedEmail,
     name: identity.name,
     lastSeenAt: Date.now(),
   });
@@ -187,6 +214,110 @@ async function getUserByTokenIdentifier(
     .unique();
 }
 
+async function getUsersByNormalizedEmail(
+  ctx: QueryCtx | MutationCtx,
+  normalizedEmail: string,
+) {
+  return await ctx.db
+    .query("users")
+    .withIndex("by_email", (q) => q.eq("email", normalizedEmail))
+    .collect();
+}
+
+function isEmailSafeForAccountLinking(identity: {
+  emailVerified?: boolean;
+}) {
+  if (identity.emailVerified === false) return false;
+
+  return true;
+}
+
+async function pickCanonicalUserForMerge(ctx: MutationCtx, users: UserDoc[]) {
+  if (users.length === 1) return users[0];
+
+  let best = users[0];
+  let bestAddrCount = -1;
+  let bestCreationTime = Number.POSITIVE_INFINITY;
+  for (const user of users) {
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .collect();
+    const addrCount = addresses.length;
+    const created = user._creationTime;
+    if (
+      addrCount > bestAddrCount ||
+      (addrCount === bestAddrCount && created < bestCreationTime)
+    ) {
+      best = user;
+      bestAddrCount = addrCount;
+      bestCreationTime = created;
+    }
+  }
+
+  return best;
+}
+
+async function mergeDuplicateUsersInGroup(ctx: MutationCtx, users: UserDoc[]) {
+  if (users.length <= 1) return users[0] ?? null;
+
+  const canonical = await pickCanonicalUserForMerge(ctx, users);
+  const duplicates = users.filter((user) => user._id !== canonical._id);
+  let mergedAdmin = canonical.admin;
+  for (const dup of duplicates) {
+    mergedAdmin = mergedAdmin || dup.admin;
+    const rows = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", dup._id))
+      .collect();
+    for (const row of rows)
+      await ctx.db.patch("userEmailAddresses", row._id, {
+        userId: canonical._id,
+      });
+
+    await ctx.db.delete("users", dup._id);
+  }
+
+  await ctx.db.patch("users", canonical._id, { admin: mergedAdmin });
+  return await ctx.db.get("users", canonical._id);
+}
+
+export const mergeAllDuplicateUsersByEmail = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let normalizedEmailWrites = 0;
+    const initialUsers = await ctx.db.query("users").take(10000);
+    for (const user of initialUsers) {
+      if (user.email === undefined) continue;
+      const normalized = tryNormalizeEmail(user.email);
+      if (normalized === undefined || normalized === user.email) continue;
+      await ctx.db.patch("users", user._id, { email: normalized });
+      normalizedEmailWrites++;
+    }
+
+    const grouped = new Map<string, UserDoc[]>();
+    const refreshedUsers = await ctx.db.query("users").take(10000);
+    for (const user of refreshedUsers) {
+      if (user.email === undefined) continue;
+      const list = grouped.get(user.email) ?? [];
+      list.push(user);
+      grouped.set(user.email, list);
+    }
+
+    let mergedGroups = 0;
+    let removedUsers = 0;
+    for (const group of grouped.values()) {
+      if (group.length <= 1) continue;
+      const before = group.length;
+      await mergeDuplicateUsersInGroup(ctx, group);
+      mergedGroups++;
+      removedUsers += before - 1;
+    }
+
+    return { normalizedEmailWrites, mergedGroups, removedUsers };
+  },
+});
+
 function normalizeAvlecAddress(value: string) {
   const normalized = normalizeEmailAddress(value);
   if (!normalized.endsWith(`@${AVLEC_DOMAIN}`)) {
@@ -203,6 +334,15 @@ function normalizeEmailAddress(value: string) {
   }
 
   return normalized;
+}
+
+function tryNormalizeEmail(email: string | undefined) {
+  if (email === undefined) return undefined;
+  try {
+    return normalizeEmailAddress(email);
+  } catch {
+    return undefined;
+  }
 }
 
 async function assignSignupEmailIfAvailable(

@@ -8,7 +8,9 @@ export default defineSchema({
     email: v.optional(v.string()),
     name: v.optional(v.string()),
     lastSeenAt: v.optional(v.number()),
-  }).index("by_tokenIdentifier", ["tokenIdentifier"]),
+  })
+    .index("by_tokenIdentifier", ["tokenIdentifier"])
+    .index("by_email", ["email"]),
 
   userEmailAddresses: defineTable({
     userId: v.id("users"),
