@@ -216,12 +216,13 @@ h1 {
 }
 
 .message-row {
+  position: relative;
   display: grid;
   width: 100%;
   min-height: 92px;
   grid-template-rows: auto auto auto;
   gap: 4px;
-  padding: 14px 18px;
+  padding: 14px 54px 14px 18px;
   border: 0;
   border-left: 3px solid transparent;
   border-bottom: 1px solid #eeeeee;
@@ -426,6 +427,12 @@ h1 {
 .message-keep-action:hover {
   border-color: #107c41;
   background: #e7f6ed;
+}
+
+.message-block-action {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
 }
 
 .message-row:hover .message-row-action,
