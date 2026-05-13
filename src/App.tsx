@@ -25,6 +25,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import { signIn, signOut, useAuth } from "./shoo";
 
 const PAGE_SIZE = 50;
+const COMPOSE_DRAFT_KEY = "life-mail:compose-draft";
 type Screen = "inbox" | "reply";
 type Folder = "inbox" | "archive" | "keep" | "deleted";
 type SenderAddress = {
@@ -553,6 +554,7 @@ function MailScreen() {
             {screen === "reply" ? (
               <ReplyScreen
                 bodyState={selectedBody}
+                key={selected.message._id}
                 message={selected.message}
                 onBack={() => setScreen("inbox")}
                 senderAddresses={getSortedSenderAddresses(viewer?.addresses)}
@@ -964,12 +966,14 @@ function ComposePane({
     api.emails.generateAttachmentUploadUrl,
   );
   const attachmentInputId = useId();
-  const [to, setTo] = useState("");
-  const [cc, setCc] = useState("");
+  const [to, setTo] = useState(() => readDraft(COMPOSE_DRAFT_KEY).to);
+  const [cc, setCc] = useState(() => readDraft(COMPOSE_DRAFT_KEY).cc);
   const [from, setFrom] = useState(() => getDefaultSenderAddress(senderAddresses));
-  const [subject, setSubject] = useState("");
-  const [text, setText] = useState("");
-  const [html, setHtml] = useState("");
+  const [subject, setSubject] = useState(
+    () => readDraft(COMPOSE_DRAFT_KEY).subject,
+  );
+  const [text, setText] = useState(() => readDraft(COMPOSE_DRAFT_KEY).text);
+  const [html, setHtml] = useState(() => readDraft(COMPOSE_DRAFT_KEY).html);
   const [inlineImages, setInlineImages] = useState<InlineImage[]>([]);
   const [attachments, setAttachments] = useState<ReplyAttachment[]>([]);
   const [sendState, setSendState] = useState<
@@ -988,6 +992,10 @@ function ComposePane({
     subject.trim().length > 0 &&
     text.trim().length > 0 &&
     sendState.status !== "sending";
+
+  useEffect(() => {
+    writeDraft(COMPOSE_DRAFT_KEY, { to, cc, subject, text, html });
+  }, [cc, html, subject, text, to]);
 
   function resetSendState() {
     if (sendState.status === "sent" || sendState.status === "error") {
@@ -1063,6 +1071,7 @@ function ComposePane({
       setHtml("");
       setInlineImages([]);
       setAttachments([]);
+      clearDraft(COMPOSE_DRAFT_KEY);
     } catch (error: unknown) {
       setSendState({
         status: "error",
@@ -1655,11 +1664,12 @@ function ReplyScreen({
     api.emails.generateAttachmentUploadUrl,
   );
   const attachmentInputId = useId();
-  const [cc, setCc] = useState("");
+  const draftKey = `life-mail:reply-draft:${message._id}`;
+  const [cc, setCc] = useState(() => readDraft(draftKey).cc);
   const [from, setFrom] = useState(() => getDefaultSenderAddress(senderAddresses));
-  const [prompt, setPrompt] = useState("");
-  const [text, setText] = useState("");
-  const [html, setHtml] = useState("");
+  const [prompt, setPrompt] = useState(() => readDraft(draftKey).prompt);
+  const [text, setText] = useState(() => readDraft(draftKey).text);
+  const [html, setHtml] = useState(() => readDraft(draftKey).html);
   const [inlineImages, setInlineImages] = useState<InlineImage[]>([]);
   const [attachments, setAttachments] = useState<ReplyAttachment[]>([]);
   const [sendState, setSendState] = useState<
@@ -1688,6 +1698,10 @@ function ReplyScreen({
     prompt.trim().length > 0 &&
     promptState.status !== "generating" &&
     promptState.status !== "previewing";
+
+  useEffect(() => {
+    writeDraft(draftKey, { cc, prompt, text, html });
+  }, [cc, draftKey, html, prompt, text]);
 
   function resetSendState() {
     if (sendState.status === "sent" || sendState.status === "error") {
@@ -1811,6 +1825,7 @@ function ReplyScreen({
       setInlineImages([]);
       setCc("");
       setAttachments([]);
+      clearDraft(draftKey);
     } catch (error: unknown) {
       setSendState({
         status: "error",
@@ -2067,6 +2082,48 @@ type MessageBodyState =
   | { status: "loading" }
   | { status: "ready"; body: { html: string | null; text: string | null } }
   | { status: "error"; message: string };
+
+type MailDraft = {
+  cc: string;
+  html: string;
+  prompt: string;
+  subject: string;
+  text: string;
+  to: string;
+};
+
+function emptyDraft(): MailDraft {
+  return { cc: "", html: "", prompt: "", subject: "", text: "", to: "" };
+}
+
+function readDraft(key: string): MailDraft {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) {
+      return emptyDraft();
+    }
+
+    return { ...emptyDraft(), ...JSON.parse(raw) };
+  } catch {
+    return emptyDraft();
+  }
+}
+
+function writeDraft(key: string, draft: Partial<MailDraft>) {
+  const hasContent = Object.values(draft).some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+  if (!hasContent) {
+    clearDraft(key);
+    return;
+  }
+
+  window.localStorage.setItem(key, JSON.stringify(draft));
+}
+
+function clearDraft(key: string) {
+  window.localStorage.removeItem(key);
+}
 
 type ReplyAttachment = {
   filename: string;
