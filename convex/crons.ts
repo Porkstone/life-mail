@@ -10,4 +10,11 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "delete old archived received messages",
+  { hours: 24 },
+  internal.emails.deleteOldArchivedReceivedMessages,
+  {},
+);
+
 export default crons;

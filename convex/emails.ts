@@ -39,6 +39,11 @@ const outboundMessageValidator = {
   attachments: v.array(replyAttachmentValidator),
 };
 
+const SETTINGS_KEY = "global";
+const OPENROUTER_MODEL = "openrouter/auto";
+const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
+const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
+
 export const listReceived = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
@@ -67,13 +72,52 @@ export const listReceived = query({
     const messages = [];
     for (const messageId of messageIds.keys()) {
       const message = await ctx.db.get("receivedMessages", messageId);
-      if (message !== null) {
+      if (message !== null && message.deletedOn === undefined) {
         messages.push(message);
       }
     }
 
     return messages
       .sort((left, right) => right.receivedAt - left.receivedAt)
+      .slice(0, limit);
+  },
+});
+
+export const listDeletedReceived = query({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    if (addresses.length === 0) {
+      return [];
+    }
+
+    const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
+    const messageIds = new Map<Id<"receivedMessages">, number>();
+    for (const { address } of addresses) {
+      const recipients = await ctx.db
+        .query("receivedMessageRecipients")
+        .withIndex("by_address_and_receivedAt", (q) => q.eq("address", address))
+        .order("desc")
+        .take(limit);
+      for (const recipient of recipients) {
+        messageIds.set(recipient.messageId, recipient.receivedAt);
+      }
+    }
+
+    const messages = [];
+    for (const messageId of messageIds.keys()) {
+      const message = await ctx.db.get("receivedMessages", messageId);
+      if (message !== null && message.deletedOn !== undefined) {
+        messages.push(message);
+      }
+    }
+
+    return messages
+      .sort((left, right) => (right.deletedOn ?? 0) - (left.deletedOn ?? 0))
       .slice(0, limit);
   },
 });
@@ -130,7 +174,10 @@ export const blockSenderAndArchive = mutation({
       }
     }
 
-    await ctx.db.patch("receivedMessages", args.messageId, { archived: true });
+    await ctx.db.patch("receivedMessages", args.messageId, {
+      archived: true,
+      kept: false,
+    });
     return { address };
   },
 });
@@ -140,7 +187,23 @@ export const archiveReceived = mutation({
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     await requireMessageAccess(ctx, user._id, args.messageId);
-    await ctx.db.patch("receivedMessages", args.messageId, { archived: true });
+    await ctx.db.patch("receivedMessages", args.messageId, {
+      archived: true,
+      kept: false,
+    });
+    return null;
+  },
+});
+
+export const keepReceived = mutation({
+  args: { messageId: v.id("receivedMessages") },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    await ctx.db.patch("receivedMessages", args.messageId, {
+      archived: false,
+      kept: true,
+    });
     return null;
   },
 });
@@ -213,6 +276,57 @@ export const backfillReceivedMessageRecipients = mutation({
   },
 });
 
+export const getOpenRouterSettings = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    const settings = await ctx.db
+      .query("appSettings")
+      .withIndex("by_key", (q) => q.eq("key", SETTINGS_KEY))
+      .unique();
+
+    return {
+      hasApiKey:
+        settings?.openRouterApiKey !== undefined &&
+        settings.openRouterApiKey.trim().length > 0,
+      systemPrompt: settings?.openRouterSystemPrompt ?? "",
+    };
+  },
+});
+
+export const updateOpenRouterSettings = mutation({
+  args: {
+    apiKey: v.optional(v.string()),
+    systemPrompt: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const existing = await ctx.db
+      .query("appSettings")
+      .withIndex("by_key", (q) => q.eq("key", SETTINGS_KEY))
+      .unique();
+    const trimmedApiKey = args.apiKey?.trim();
+    const update = {
+      openRouterSystemPrompt: args.systemPrompt,
+      updatedAt: Date.now(),
+      ...(trimmedApiKey !== undefined && trimmedApiKey.length > 0
+        ? { openRouterApiKey: trimmedApiKey }
+        : {}),
+    };
+
+    if (existing === null) {
+      await ctx.db.insert("appSettings", {
+        key: SETTINGS_KEY,
+        ...update,
+      });
+    } else {
+      await ctx.db.patch("appSettings", existing._id, update);
+    }
+
+    return null;
+  },
+});
+
 export const getReceivedBody = action({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args): Promise<ReceivedBody> => {
@@ -225,7 +339,7 @@ export const getReceivedBody = action({
       throw new Error("Message not found.");
     }
 
-    if (target.bodyFetchedAt !== undefined) {
+    if (target.deletedOn !== undefined || target.bodyFetchedAt !== undefined) {
       return {
         html: target.bodyHtml ?? null,
         text: target.bodyText ?? null,
@@ -249,6 +363,70 @@ export const getReceivedBody = action({
       });
       throw error;
     }
+  },
+});
+
+export const generateReplyFromPrompt = action({
+  args: {
+    originalMessageId: v.id("receivedMessages"),
+    prompt: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ text: string }> => {
+    const identity = await requireActionIdentity(ctx);
+    const settings: OpenRouterSettings | null = await ctx.runQuery(
+      internal.emails.getOpenRouterSettingsForAction,
+      {},
+    );
+    const apiKey = settings?.openRouterApiKey?.trim();
+    if (apiKey === undefined || apiKey.length === 0) {
+      throw new Error("OpenRouter API key is not configured.");
+    }
+    if (settings === null) {
+      throw new Error("OpenRouter settings are not configured.");
+    }
+
+    const prompt = args.prompt.trim();
+    if (prompt.length === 0) {
+      throw new Error("Enter a prompt first.");
+    }
+
+    const originalBody = await getReceivedBodyTextForPrompt(
+      ctx,
+      args.originalMessageId,
+      identity.tokenIdentifier,
+    );
+
+    return {
+      text: await generateOpenRouterReply(
+        apiKey,
+        settings,
+        buildOpenRouterUserPrompt(prompt, originalBody),
+      ),
+    };
+  },
+});
+
+export const previewOpenRouterPrompt = action({
+  args: {
+    originalMessageId: v.id("receivedMessages"),
+    prompt: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ systemPrompt: string; prompt: string }> => {
+    const identity = await requireActionIdentity(ctx);
+    const settings: OpenRouterSettings | null = await ctx.runQuery(
+      internal.emails.getOpenRouterSettingsForAction,
+      {},
+    );
+    const originalBody = await getReceivedBodyTextForPrompt(
+      ctx,
+      args.originalMessageId,
+      identity.tokenIdentifier,
+    );
+
+    return {
+      systemPrompt: settings?.openRouterSystemPrompt?.trim() ?? "",
+      prompt: buildOpenRouterUserPrompt(args.prompt.trim(), originalBody),
+    };
   },
 });
 
@@ -320,13 +498,16 @@ export const getReceivedAttachmentFetchTargetForUser = internalQuery({
       return null;
     }
 
-    const attachment = await ctx.db.get(args.attachmentId);
+    const attachment = await ctx.db.get(
+      "receivedMessageAttachments",
+      args.attachmentId,
+    );
     if (attachment === null) {
       return null;
     }
 
     await requireMessageAccess(ctx, user._id, attachment.messageId);
-    const message = await ctx.db.get(attachment.messageId);
+    const message = await ctx.db.get("receivedMessages", attachment.messageId);
     if (message === null) {
       return null;
     }
@@ -354,6 +535,7 @@ export const getReceivedBodyFetchTarget = internalQuery({
       bodyHtml: message.bodyHtml,
       bodyText: message.bodyText,
       bodyFetchedAt: message.bodyFetchedAt,
+      deletedOn: message.deletedOn,
     };
   },
 });
@@ -386,6 +568,7 @@ export const getReceivedBodyFetchTargetForUser = internalQuery({
       bodyHtml: message.bodyHtml,
       bodyText: message.bodyText,
       bodyFetchedAt: message.bodyFetchedAt,
+      deletedOn: message.deletedOn,
     };
   },
 });
@@ -393,13 +576,63 @@ export const getReceivedBodyFetchTargetForUser = internalQuery({
 export const listPendingReceivedBodyFetches = internalQuery({
   args: {},
   handler: async (ctx) => {
-    return await ctx.db
+    const messages = await ctx.db
       .query("receivedMessages")
       .withIndex("by_body_fetch_status_and_received_at", (q) =>
         q.eq("bodyFetchStatus", "pending"),
       )
       .order("asc")
       .take(25);
+
+    return messages.filter((message) => message.deletedOn === undefined);
+  },
+});
+
+export const deleteOldArchivedReceivedMessages = internalMutation({
+  args: { cutoffReceivedAt: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const cutoffReceivedAt =
+      args.cutoffReceivedAt ?? Date.now() - OLD_ARCHIVED_MESSAGE_AGE_MS;
+    const deletedOn = Date.now();
+    const messages = await ctx.db
+      .query("receivedMessages")
+      .withIndex("by_archived_and_deletedOn_and_receivedAt", (q) =>
+        q
+          .eq("archived", true)
+          .eq("deletedOn", undefined)
+          .lte("receivedAt", cutoffReceivedAt),
+      )
+      .take(OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE);
+
+    for (const message of messages) {
+      const attachments = await ctx.db
+        .query("receivedMessageAttachments")
+        .withIndex("by_message_id", (q) => q.eq("messageId", message._id))
+        .take(100);
+      for (const attachment of attachments) {
+        await ctx.db.delete("receivedMessageAttachments", attachment._id);
+      }
+
+      await ctx.db.patch("receivedMessages", message._id, {
+        deletedOn,
+        bodyText: null,
+        bodyHtml: null,
+        bodyFetchStatus: undefined,
+        bodyFetchError: undefined,
+        bodyFetchedAt: undefined,
+        attachmentCount: 0,
+      });
+    }
+
+    if (messages.length === OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.emails.deleteOldArchivedReceivedMessages,
+        { cutoffReceivedAt },
+      );
+    }
+
+    return { deleted: messages.length };
   },
 });
 
@@ -430,6 +663,16 @@ export const storeReceivedBodyFetchError = internalMutation({
       bodyFetchStatus: "error",
       bodyFetchError: args.error,
     });
+  },
+});
+
+export const getOpenRouterSettingsForAction = internalQuery({
+  args: {},
+  handler: async (ctx): Promise<OpenRouterSettings | null> => {
+    return await ctx.db
+      .query("appSettings")
+      .withIndex("by_key", (q) => q.eq("key", SETTINGS_KEY))
+      .unique();
   },
 });
 
@@ -747,6 +990,7 @@ type BodyFetchTarget = {
   bodyHtml?: string | null;
   bodyText?: string | null;
   bodyFetchedAt?: number;
+  deletedOn?: number;
 };
 
 type ReceivedBody = {
@@ -768,6 +1012,11 @@ type ReceivedAttachmentDownload = {
   contentType: string;
 };
 
+type OpenRouterSettings = {
+  openRouterApiKey?: string;
+  openRouterSystemPrompt?: string;
+};
+
 type ReplyAttachmentInput = {
   filename: string;
   content?: string;
@@ -783,6 +1032,104 @@ async function requireActionIdentity(ctx: ActionCtx) {
   }
 
   return identity;
+}
+
+async function generateOpenRouterReply(
+  apiKey: string,
+  settings: OpenRouterSettings,
+  prompt: string,
+) {
+  const messages = [
+    ...(settings.openRouterSystemPrompt?.trim()
+      ? [{ role: "system", content: settings.openRouterSystemPrompt.trim() }]
+      : []),
+    { role: "user", content: prompt },
+  ];
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://life-mail.local",
+      "X-Title": "Life Mail",
+    },
+    body: JSON.stringify({
+      model: OPENROUTER_MODEL,
+      messages,
+    }),
+  });
+  const responseBody = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `OpenRouter returned ${response.status} while generating the reply.${
+        responseBody.length > 0 ? ` ${responseBody}` : ""
+      }`,
+    );
+  }
+
+  const parsed = JSON.parse(responseBody) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  const content = parsed.choices?.[0]?.message?.content?.trim();
+  if (content === undefined || content.length === 0) {
+    throw new Error("OpenRouter did not return a reply.");
+  }
+
+  return content;
+}
+
+async function getReceivedBodyTextForPrompt(
+  ctx: ActionCtx,
+  messageId: Id<"receivedMessages">,
+  tokenIdentifier: string,
+) {
+  const target: BodyFetchTarget | null = await ctx.runQuery(
+    internal.emails.getReceivedBodyFetchTargetForUser,
+    { messageId, tokenIdentifier },
+  );
+  if (target === null) {
+    throw new Error("Message not found.");
+  }
+
+  if (target.bodyFetchedAt !== undefined) {
+    return target.bodyText ?? htmlToText(target.bodyHtml ?? "");
+  }
+
+  const body = await fetchReceivedBodyFromResend(target.resendEmailId);
+  await ctx.runMutation(internal.emails.storeReceivedBody, {
+    messageId,
+    ...body,
+  });
+
+  return body.text ?? htmlToText(body.html ?? "");
+}
+
+function buildOpenRouterUserPrompt(prompt: string, originalBody: string) {
+  const trimmedBody = originalBody.trim();
+  if (trimmedBody.length === 0) {
+    return prompt;
+  }
+
+  return `${prompt}\n\nOriginal message body:\n${trimmedBody}`;
+}
+
+function htmlToText(html: string) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s+/g, "\n")
+    .trim();
 }
 
 async function requireMessageAccess(

@@ -42,6 +42,8 @@ export default defineSchema({
     attachmentCount: v.number(),
     receivedAt: v.number(),
     archived: v.optional(v.boolean()),
+    kept: v.optional(v.boolean()),
+    deletedOn: v.optional(v.number()),
     bodyHtml: v.optional(v.union(v.string(), v.null())),
     bodyText: v.optional(v.union(v.string(), v.null())),
     bodyFetchedAt: v.optional(v.number()),
@@ -56,6 +58,11 @@ export default defineSchema({
     .index("by_received_at", ["receivedAt"])
     .index("by_body_fetch_status_and_received_at", [
       "bodyFetchStatus",
+      "receivedAt",
+    ])
+    .index("by_archived_and_deletedOn_and_receivedAt", [
+      "archived",
+      "deletedOn",
       "receivedAt",
     ]),
 
@@ -89,4 +96,11 @@ export default defineSchema({
     address: v.string(),
     blockedAt: v.number(),
   }).index("by_address", ["address"]),
+
+  appSettings: defineTable({
+    key: v.string(),
+    openRouterApiKey: v.optional(v.string()),
+    openRouterSystemPrompt: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
 });

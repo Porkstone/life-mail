@@ -419,6 +419,15 @@ h1 {
   background: #eaf4ff;
 }
 
+.message-keep-action {
+  color: #107c41;
+}
+
+.message-keep-action:hover {
+  border-color: #107c41;
+  background: #e7f6ed;
+}
+
 .message-row:hover .message-row-action,
 .message-row:focus .message-row-action,
 .message-row:focus-within .message-row-action,
@@ -764,6 +773,69 @@ dd {
   gap: 18px;
 }
 
+.prompt-field {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 2px;
+}
+
+.prompt-field .editor-field textarea {
+  min-height: 64px;
+  height: 64px;
+}
+
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-send-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.prompt-preview-action {
+  width: 36px;
+  min-height: 36px;
+  color: #0f6cbd;
+}
+
+.prompt-preview-action:hover {
+  border-color: #0f6cbd;
+  background: #eaf4ff;
+}
+
+.prompt-preview {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e1dfdd;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.prompt-preview span {
+  color: #616161;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.prompt-preview pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0;
+  color: #242424;
+  font:
+    13px/1.5 "Segoe UI",
+    system-ui,
+    sans-serif;
+  white-space: pre-wrap;
+}
+
 .editor-field {
   display: grid;
   gap: 7px;
@@ -1053,6 +1125,10 @@ dd {
   max-width: 560px;
   gap: 16px;
   margin-top: 18px;
+}
+
+.openrouter-form textarea {
+  min-height: 140px;
 }
 
 .editor-field select {

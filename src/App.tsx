@@ -11,9 +11,12 @@ import {
   LogIn,
   LogOut,
   Paperclip,
+  Save,
   Settings,
   Shield,
+  Sparkles,
   SquarePen,
+  Trash2,
   X,
 } from "lucide-react";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -23,7 +26,7 @@ import { signIn, signOut, useAuth } from "./shoo";
 
 const PAGE_SIZE = 50;
 type Screen = "inbox" | "reply";
-type Folder = "inbox" | "archive";
+type Folder = "inbox" | "archive" | "keep" | "deleted";
 
 export default function App() {
   const shooAuth = useAuth();
@@ -97,14 +100,18 @@ export default function App() {
 function MailScreen() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [folder, setFolder] = useState<Folder>("inbox");
   const messages = useQuery(api.emails.listReceived, { limit: PAGE_SIZE });
+  const deletedMessages = useQuery(
+    api.emails.listDeletedReceived,
+    folder === "deleted" ? { limit: PAGE_SIZE } : "skip",
+  );
   const viewer = useQuery(api.auth.viewer, {});
   const [selectedId, setSelectedId] = useState<Id<"receivedMessages"> | null>(
     null,
   );
   const [searchTerm, setSearchTerm] = useState("");
   const [screen, setScreen] = useState<Screen>("inbox");
-  const [folder, setFolder] = useState<Folder>("inbox");
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [blockState, setBlockState] = useState<
     | { status: "idle" }
@@ -116,17 +123,30 @@ function MailScreen() {
     | { status: "archiving"; messageId: Id<"receivedMessages"> }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [keepState, setKeepState] = useState<
+    | { status: "idle" }
+    | { status: "keeping"; messageId: Id<"receivedMessages"> }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
 
   const filteredMessages = useMemo(() => {
-    if (messages === undefined) {
+    const activeMessages = folder === "deleted" ? deletedMessages : messages;
+    if (activeMessages === undefined) {
       return [];
     }
 
-    const visibleMessages = messages.filter((message) =>
-      folder === "archive"
-        ? message.archived === true
-        : message.archived !== true,
-    );
+    const visibleMessages = activeMessages.filter((message) => {
+      if (folder === "deleted") {
+        return true;
+      }
+      if (folder === "archive") {
+        return message.archived === true;
+      }
+      if (folder === "keep") {
+        return message.kept === true;
+      }
+      return message.archived !== true && message.kept !== true;
+    });
     const normalizedSearch = searchTerm.trim().toLowerCase();
     if (normalizedSearch.length === 0) {
       return visibleMessages;
@@ -144,7 +164,7 @@ function MailScreen() {
         .toLowerCase()
         .includes(normalizedSearch),
     );
-  }, [folder, messages, searchTerm]);
+  }, [deletedMessages, folder, messages, searchTerm]);
 
   const selectedMessageId = filteredMessages.some(
     (message) => message._id === selectedId,
@@ -158,6 +178,7 @@ function MailScreen() {
   const fetchReceivedBody = useAction(api.emails.getReceivedBody);
   const blockSenderAndArchive = useMutation(api.emails.blockSenderAndArchive);
   const archiveReceived = useMutation(api.emails.archiveReceived);
+  const keepReceived = useMutation(api.emails.keepReceived);
   const [selectedBody, setSelectedBody] = useState<MessageBodyState>({
     status: "idle",
   });
@@ -234,6 +255,22 @@ function MailScreen() {
     }
   }
 
+  async function handleKeepMessage(messageId: Id<"receivedMessages">) {
+    setKeepState({ status: "keeping", messageId });
+    try {
+      await keepReceived({ messageId });
+      setSelectedId(null);
+      setScreen("inbox");
+      setKeepState({ status: "idle" });
+    } catch (error: unknown) {
+      setKeepState({
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Unable to keep this message.",
+      });
+    }
+  }
+
   return (
     <div className={isComposeOpen ? "mail-shell compose-open" : "mail-shell"}>
       <aside className="folder-rail" aria-label="Mail folders">
@@ -263,6 +300,32 @@ function MailScreen() {
           type="button"
         >
           <Archive aria-hidden="true" size={20} strokeWidth={2.2} />
+        </button>
+        <button
+          className={folder === "keep" ? "rail-button active" : "rail-button"}
+          onClick={() => {
+            setFolder("keep");
+            setSelectedId(null);
+            setScreen("inbox");
+          }}
+          title="Keep"
+          type="button"
+        >
+          <Save aria-hidden="true" size={20} strokeWidth={2.2} />
+        </button>
+        <button
+          className={
+            folder === "deleted" ? "rail-button active" : "rail-button"
+          }
+          onClick={() => {
+            setFolder("deleted");
+            setSelectedId(null);
+            setScreen("inbox");
+          }}
+          title="Deleted"
+          type="button"
+        >
+          <Trash2 aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
         <button
           aria-label="Open settings"
@@ -310,7 +373,15 @@ function MailScreen() {
       <section className="message-list" aria-label="Received messages">
         <div className="list-header">
           <div>
-            <h1>{folder === "archive" ? "Archive" : "Inbox"}</h1>
+            <h1>
+              {folder === "archive"
+                ? "Archive"
+                : folder === "keep"
+                  ? "Keep"
+                  : folder === "deleted"
+                    ? "Deleted"
+                  : "Inbox"}
+            </h1>
           </div>
           <div className="list-header-actions">
             <span className="message-count">{filteredMessages.length}</span>
@@ -339,19 +410,32 @@ function MailScreen() {
         />
 
         <div className="messages">
-          {messages === undefined ? (
+          {(folder === "deleted" ? deletedMessages : messages) ===
+          undefined ? (
             <EmptyState title="Loading inbox" detail="Waiting for Convex..." />
           ) : filteredMessages.length === 0 ? (
             <EmptyState
               title={
-                messages.length === 0 ? "No received mail yet" : "No matches"
+                (folder === "deleted" ? deletedMessages : messages)?.length ===
+                0
+                  ? folder === "deleted"
+                    ? "No deleted mail"
+                    : "No received mail yet"
+                  : "No matches"
               }
               detail={
-                messages.length === 0
-                  ? "Ask an administrator to link your avlec.co inbound address."
-                  : folder === "archive"
-                    ? "Archived messages and blocked senders will appear here."
-                    : "Try another sender, subject, or recipient."
+                (folder === "deleted" ? deletedMessages : messages)?.length ===
+                0
+                  ? folder === "deleted"
+                    ? "Messages deleted by retention cleanup will appear here."
+                    : "Ask an administrator to link your avlec.co inbound address."
+                    : folder === "archive"
+                      ? "Archived messages and blocked senders will appear here."
+                      : folder === "keep"
+                        ? "Saved messages will appear here."
+                        : folder === "deleted"
+                          ? "Messages deleted by retention cleanup will appear here."
+                        : "Try another sender, subject, or recipient."
               }
             />
           ) : (
@@ -386,6 +470,7 @@ function MailScreen() {
                       aria-label="Archive message"
                       className="icon-action message-row-action message-archive-action"
                       disabled={
+                        folder === "deleted" ||
                         message.archived === true ||
                         (archiveState.status === "archiving" &&
                           archiveState.messageId === message._id)
@@ -403,6 +488,7 @@ function MailScreen() {
                       aria-label="Block sender and archive message"
                       className="icon-action block-action message-row-action message-block-action"
                       disabled={
+                        folder === "deleted" ||
                         blockState.status === "blocking" &&
                         blockState.messageId === message._id
                       }
@@ -414,6 +500,24 @@ function MailScreen() {
                       type="button"
                     >
                       <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
+                    </button>
+                    <button
+                      aria-label="Move message to Keep"
+                      className="icon-action message-row-action message-keep-action"
+                      disabled={
+                        folder === "deleted" ||
+                        message.kept === true ||
+                        (keepState.status === "keeping" &&
+                          keepState.messageId === message._id)
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleKeepMessage(message._id);
+                      }}
+                      title="Keep message"
+                      type="button"
+                    >
+                      <Save aria-hidden="true" size={15} strokeWidth={2.3} />
                     </button>
                   </span>
                 </span>
@@ -453,9 +557,11 @@ function MailScreen() {
                 blockError={
                   archiveState.status === "error"
                     ? archiveState.message
-                    : blockState.status === "error"
-                      ? blockState.message
-                      : null
+                    : keepState.status === "error"
+                      ? keepState.message
+                      : blockState.status === "error"
+                        ? blockState.message
+                        : null
                 }
                 bodyState={selectedBody}
                 message={selected.message}
@@ -502,13 +608,22 @@ function AdminScreen() {
     api.auth.listUsers,
     viewer?.isAdmin === true ? {} : "skip",
   );
+  const openRouterSettings = useQuery(
+    api.emails.getOpenRouterSettings,
+    viewer?.isAdmin === true ? {} : "skip",
+  );
   const assignAddress = useMutation(api.auth.assignAddress);
   const removeAddress = useMutation(api.auth.removeAddress);
+  const updateOpenRouterSettings = useMutation(
+    api.emails.updateOpenRouterSettings,
+  );
   const backfillRecipients = useMutation(
     api.emails.backfillReceivedMessageRecipients,
   );
   const [selectedUserId, setSelectedUserId] = useState<Id<"users"> | "">("");
   const [addressLocalPart, setAddressLocalPart] = useState("");
+  const [openRouterApiKey, setOpenRouterApiKey] = useState("");
+  const [openRouterSystemPrompt, setOpenRouterSystemPrompt] = useState("");
   const [adminState, setAdminState] = useState<
     | { status: "idle" }
     | { status: "saving" }
@@ -516,6 +631,20 @@ function AdminScreen() {
     | { status: "indexed"; count: number }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [openRouterState, setOpenRouterState] = useState<
+    | { status: "idle" }
+    | { status: "saving" }
+    | { status: "saved" }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+
+  useEffect(() => {
+    if (openRouterSettings === undefined) {
+      return;
+    }
+
+    setOpenRouterSystemPrompt(openRouterSettings.systemPrompt);
+  }, [openRouterSettings]);
 
   if (viewer === undefined) {
     return (
@@ -569,6 +698,30 @@ function AdminScreen() {
           error instanceof Error
             ? error.message
             : "Unable to index existing received mail.",
+      });
+    }
+  }
+
+  async function handleOpenRouterSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setOpenRouterState({ status: "saving" });
+    try {
+      await updateOpenRouterSettings({
+        apiKey:
+          openRouterApiKey.trim().length > 0
+            ? openRouterApiKey.trim()
+            : undefined,
+        systemPrompt: openRouterSystemPrompt,
+      });
+      setOpenRouterApiKey("");
+      setOpenRouterState({ status: "saved" });
+    } catch (error: unknown) {
+      setOpenRouterState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to save OpenRouter settings.",
       });
     }
   }
@@ -652,6 +805,72 @@ function AdminScreen() {
           <p className="send-status success">
             Indexed {adminState.count} recipient links.
           </p>
+        ) : null}
+      </section>
+
+      <section className="settings-panel" aria-label="OpenRouter settings">
+        <div className="settings-panel-header">
+          <div>
+            <p className="eyebrow">OpenRouter</p>
+            <h2>Reply generation</h2>
+          </div>
+          {openRouterSettings?.hasApiKey === true ? (
+            <span className="admin-badge">API key set</span>
+          ) : null}
+        </div>
+
+        <form
+          className="admin-address-form openrouter-form"
+          onSubmit={(event) => void handleOpenRouterSubmit(event)}
+        >
+          <label className="editor-field">
+            <span>API key</span>
+            <input
+              autoComplete="off"
+              onChange={(event) => {
+                setOpenRouterApiKey(event.target.value);
+                setOpenRouterState({ status: "idle" });
+              }}
+              placeholder={
+                openRouterSettings?.hasApiKey === true
+                  ? "Leave blank to keep existing key"
+                  : "sk-or-..."
+              }
+              type="password"
+              value={openRouterApiKey}
+            />
+          </label>
+
+          <label className="editor-field">
+            <span>System prompt</span>
+            <textarea
+              onChange={(event) => {
+                setOpenRouterSystemPrompt(event.target.value);
+                setOpenRouterState({ status: "idle" });
+              }}
+              placeholder="Instructions to prefix to every reply prompt"
+              value={openRouterSystemPrompt}
+            />
+          </label>
+
+          <button
+            className="primary-action"
+            disabled={
+              openRouterSettings === undefined ||
+              openRouterState.status === "saving"
+            }
+            type="submit"
+          >
+            {openRouterState.status === "saving"
+              ? "Saving..."
+              : "Save OpenRouter"}
+          </button>
+        </form>
+
+        {openRouterState.status === "saved" ? (
+          <p className="send-status success">OpenRouter settings saved.</p>
+        ) : openRouterState.status === "error" ? (
+          <p className="send-status error">{openRouterState.message}</p>
         ) : null}
       </section>
 
@@ -1386,11 +1605,14 @@ function ReplyScreen({
   onBack: () => void;
 }) {
   const sendReply = useAction(api.emails.sendReply);
+  const generateReplyFromPrompt = useAction(api.emails.generateReplyFromPrompt);
+  const previewOpenRouterPrompt = useAction(api.emails.previewOpenRouterPrompt);
   const generateAttachmentUploadUrl = useMutation(
     api.emails.generateAttachmentUploadUrl,
   );
   const attachmentInputId = useId();
   const [cc, setCc] = useState("");
+  const [prompt, setPrompt] = useState("");
   const [text, setText] = useState("");
   const [html, setHtml] = useState("");
   const [inlineImages, setInlineImages] = useState<InlineImage[]>([]);
@@ -1401,8 +1623,23 @@ function ReplyScreen({
     | { status: "sent" }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [promptState, setPromptState] = useState<
+    | { status: "idle" }
+    | { status: "generating" }
+    | { status: "previewing" }
+    | {
+        status: "preview";
+        systemPrompt: string;
+        prompt: string;
+      }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
   const subject = replySubject(message.subject);
   const canSend = text.trim().length > 0 && sendState.status !== "sending";
+  const canGenerate =
+    prompt.trim().length > 0 &&
+    promptState.status !== "generating" &&
+    promptState.status !== "previewing";
 
   function resetSendState() {
     if (sendState.status === "sent" || sendState.status === "error") {
@@ -1439,6 +1676,54 @@ function ReplyScreen({
     setAttachments((current) =>
       current.filter((_, index) => index !== indexToRemove),
     );
+  }
+
+  async function handlePromptSubmit() {
+    if (!canGenerate) {
+      return;
+    }
+
+    setPromptState({ status: "generating" });
+    try {
+      const reply = await generateReplyFromPrompt({
+        originalMessageId: message._id,
+        prompt: prompt.trim(),
+      });
+      setText(reply.text);
+      setHtml(escapeHtml(reply.text).replace(/\r?\n/g, "<br>"));
+      setInlineImages([]);
+      resetSendState();
+      setPromptState({ status: "idle" });
+    } catch (error: unknown) {
+      setPromptState({
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Unable to draft a reply.",
+      });
+    }
+  }
+
+  async function handlePromptPreview() {
+    if (!canGenerate) {
+      return;
+    }
+
+    setPromptState({ status: "previewing" });
+    try {
+      const preview = await previewOpenRouterPrompt({
+        originalMessageId: message._id,
+        prompt: prompt.trim(),
+      });
+      setPromptState({ status: "preview", ...preview });
+    } catch (error: unknown) {
+      setPromptState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to preview the AI prompt.",
+      });
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1528,6 +1813,68 @@ function ReplyScreen({
           <div>
             <p className="eyebrow">Reply</p>
             <h2>{subject}</h2>
+          </div>
+
+          <div
+            className="prompt-field"
+            role="group"
+            aria-label="Generate reply from prompt"
+          >
+            <label className="editor-field">
+              <span>AI Prompt</span>
+              <textarea
+                onChange={(event) => {
+                  setPrompt(event.target.value);
+                  setPromptState({ status: "idle" });
+                }}
+                placeholder="Ask OpenRouter to draft the reply"
+                value={prompt}
+              />
+            </label>
+            <div className="prompt-actions">
+              <button
+                aria-label="Preview full AI prompt"
+                className="icon-action prompt-preview-action"
+                disabled={!canGenerate}
+                onClick={() => {
+                  void handlePromptPreview();
+                }}
+                title="Preview full AI prompt"
+                type="button"
+              >
+                <Eye aria-hidden="true" size={16} strokeWidth={2.2} />
+              </button>
+              <button
+                className="ghost-action prompt-send-action"
+                disabled={!canGenerate}
+                onClick={() => {
+                  void handlePromptSubmit();
+                }}
+                type="button"
+              >
+                <Sparkles aria-hidden="true" size={16} strokeWidth={2.2} />
+                {promptState.status === "generating" ? "Drafting..." : "Send"}
+              </button>
+            </div>
+            {promptState.status === "preview" ? (
+              <section className="prompt-preview" aria-label="AI prompt preview">
+                <div>
+                  <span>System</span>
+                  <pre>
+                    {promptState.systemPrompt.length > 0
+                      ? promptState.systemPrompt
+                      : "No system prompt set."}
+                  </pre>
+                </div>
+                <div>
+                  <span>User</span>
+                  <pre>{promptState.prompt}</pre>
+                </div>
+              </section>
+            ) : null}
+            {promptState.status === "error" ? (
+              <p className="send-status error">{promptState.message}</p>
+            ) : null}
           </div>
 
           <label className="editor-field">
