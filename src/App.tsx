@@ -27,6 +27,11 @@ import { signIn, signOut, useAuth } from "./shoo";
 const PAGE_SIZE = 50;
 type Screen = "inbox" | "reply";
 type Folder = "inbox" | "archive" | "keep" | "deleted";
+type SenderAddress = {
+  _id: Id<"userEmailAddresses">;
+  address: string;
+  createdAt: number;
+};
 
 export default function App() {
   const shooAuth = useAuth();
@@ -550,6 +555,7 @@ function MailScreen() {
                 bodyState={selectedBody}
                 message={selected.message}
                 onBack={() => setScreen("inbox")}
+                senderAddresses={getSortedSenderAddresses(viewer?.addresses)}
               />
             ) : (
               <MessagePreview
@@ -574,7 +580,10 @@ function MailScreen() {
       </main>
 
       {isComposeOpen ? (
-        <ComposePane onClose={() => setIsComposeOpen(false)} />
+        <ComposePane
+          onClose={() => setIsComposeOpen(false)}
+          senderAddresses={getSortedSenderAddresses(viewer?.addresses)}
+        />
       ) : null}
     </div>
   );
@@ -624,6 +633,8 @@ function AdminScreen() {
   const [addressLocalPart, setAddressLocalPart] = useState("");
   const [openRouterApiKey, setOpenRouterApiKey] = useState("");
   const [openRouterSystemPrompt, setOpenRouterSystemPrompt] = useState("");
+  const [openRouterSystemPromptDirty, setOpenRouterSystemPromptDirty] =
+    useState(false);
   const [adminState, setAdminState] = useState<
     | { status: "idle" }
     | { status: "saving" }
@@ -637,14 +648,6 @@ function AdminScreen() {
     | { status: "saved" }
     | { status: "error"; message: string }
   >({ status: "idle" });
-
-  useEffect(() => {
-    if (openRouterSettings === undefined) {
-      return;
-    }
-
-    setOpenRouterSystemPrompt(openRouterSettings.systemPrompt);
-  }, [openRouterSettings]);
 
   if (viewer === undefined) {
     return (
@@ -714,6 +717,7 @@ function AdminScreen() {
         systemPrompt: openRouterSystemPrompt,
       });
       setOpenRouterApiKey("");
+      setOpenRouterSystemPromptDirty(false);
       setOpenRouterState({ status: "saved" });
     } catch (error: unknown) {
       setOpenRouterState({
@@ -845,11 +849,16 @@ function AdminScreen() {
             <span>System prompt</span>
             <textarea
               onChange={(event) => {
+                setOpenRouterSystemPromptDirty(true);
                 setOpenRouterSystemPrompt(event.target.value);
                 setOpenRouterState({ status: "idle" });
               }}
               placeholder="Instructions to prefix to every reply prompt"
-              value={openRouterSystemPrompt}
+              value={
+                openRouterSystemPromptDirty
+                  ? openRouterSystemPrompt
+                  : openRouterSettings?.systemPrompt ?? openRouterSystemPrompt
+              }
             />
           </label>
 
@@ -943,7 +952,13 @@ function AdminScreen() {
   );
 }
 
-function ComposePane({ onClose }: { onClose: () => void }) {
+function ComposePane({
+  onClose,
+  senderAddresses,
+}: {
+  onClose: () => void;
+  senderAddresses: SenderAddress[];
+}) {
   const sendMessage = useAction(api.emails.sendMessage);
   const generateAttachmentUploadUrl = useMutation(
     api.emails.generateAttachmentUploadUrl,
@@ -951,6 +966,7 @@ function ComposePane({ onClose }: { onClose: () => void }) {
   const attachmentInputId = useId();
   const [to, setTo] = useState("");
   const [cc, setCc] = useState("");
+  const [from, setFrom] = useState(() => getDefaultSenderAddress(senderAddresses));
   const [subject, setSubject] = useState("");
   const [text, setText] = useState("");
   const [html, setHtml] = useState("");
@@ -963,7 +979,11 @@ function ComposePane({ onClose }: { onClose: () => void }) {
     | { status: "error"; message: string }
   >({ status: "idle" });
   const recipients = parseRecipients(to);
+  const resolvedFrom = senderAddresses.some((address) => address.address === from)
+    ? from
+    : getDefaultSenderAddress(senderAddresses);
   const canSend =
+    resolvedFrom.trim().length > 0 &&
     recipients.length > 0 &&
     subject.trim().length > 0 &&
     text.trim().length > 0 &&
@@ -1015,6 +1035,7 @@ function ComposePane({ onClose }: { onClose: () => void }) {
     setSendState({ status: "sending" });
     try {
       await sendMessage({
+        from: resolvedFrom,
         to: recipients,
         cc: parseRecipients(cc),
         subject: subject.trim(),
@@ -1074,6 +1095,27 @@ function ComposePane({ onClose }: { onClose: () => void }) {
             <X aria-hidden="true" size={18} strokeWidth={2.2} />
           </button>
         </header>
+
+        <label className="editor-field">
+          <span>From</span>
+          {senderAddresses.length > 1 ? (
+            <select
+              onChange={(event) => {
+                setFrom(event.target.value);
+                resetSendState();
+              }}
+              value={resolvedFrom}
+            >
+              {senderAddresses.map((address) => (
+                <option key={address._id} value={address.address}>
+                  {address.address}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input readOnly type="text" value={resolvedFrom} />
+          )}
+        </label>
 
         <label className="editor-field">
           <span>To</span>
@@ -1591,6 +1633,7 @@ function ReplyScreen({
   bodyState,
   message,
   onBack,
+  senderAddresses,
 }: {
   bodyState: MessageBodyState;
   message: {
@@ -1603,6 +1646,7 @@ function ReplyScreen({
     resendMessageId: string;
   };
   onBack: () => void;
+  senderAddresses: SenderAddress[];
 }) {
   const sendReply = useAction(api.emails.sendReply);
   const generateReplyFromPrompt = useAction(api.emails.generateReplyFromPrompt);
@@ -1612,6 +1656,7 @@ function ReplyScreen({
   );
   const attachmentInputId = useId();
   const [cc, setCc] = useState("");
+  const [from, setFrom] = useState(() => getDefaultSenderAddress(senderAddresses));
   const [prompt, setPrompt] = useState("");
   const [text, setText] = useState("");
   const [html, setHtml] = useState("");
@@ -1635,6 +1680,9 @@ function ReplyScreen({
     | { status: "error"; message: string }
   >({ status: "idle" });
   const subject = replySubject(message.subject);
+  const resolvedFrom = senderAddresses.some((address) => address.address === from)
+    ? from
+    : getDefaultSenderAddress(senderAddresses);
   const canSend = text.trim().length > 0 && sendState.status !== "sending";
   const canGenerate =
     prompt.trim().length > 0 &&
@@ -1737,6 +1785,7 @@ function ReplyScreen({
       await sendReply({
         originalMessageId: message._id,
         originalResendMessageId: message.resendMessageId,
+        from: resolvedFrom,
         to: [message.from],
         cc: parseRecipients(cc),
         subject,
@@ -1876,6 +1925,27 @@ function ReplyScreen({
               <p className="send-status error">{promptState.message}</p>
             ) : null}
           </div>
+
+          <label className="editor-field">
+            <span>From</span>
+            {senderAddresses.length > 1 ? (
+              <select
+                onChange={(event) => {
+                  setFrom(event.target.value);
+                  resetSendState();
+                }}
+                value={resolvedFrom}
+              >
+                {senderAddresses.map((address) => (
+                  <option key={address._id} value={address.address}>
+                    {address.address}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input readOnly type="text" value={resolvedFrom} />
+            )}
+          </label>
 
           <label className="editor-field">
             <span>To</span>
@@ -2245,6 +2315,16 @@ async function readReplyAttachmentContent(file: File) {
   });
 
   return dataUrl.split(",")[1] ?? "";
+}
+
+function getSortedSenderAddresses(addresses?: SenderAddress[]) {
+  return [...(addresses ?? [])].sort(
+    (left, right) => left.createdAt - right.createdAt,
+  );
+}
+
+function getDefaultSenderAddress(addresses: SenderAddress[]) {
+  return addresses[0]?.address ?? "";
 }
 
 async function readInlineImage(file: File): Promise<InlineImage> {

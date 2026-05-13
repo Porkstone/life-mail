@@ -31,6 +31,7 @@ const replyAttachmentValidator = v.object({
 });
 
 const outboundMessageValidator = {
+  from: v.optional(v.string()),
   to: v.array(v.string()),
   cc: v.array(v.string()),
   subject: v.string(),
@@ -897,6 +898,7 @@ function normalizeSenderAddress(from: string) {
 
 async function sendOutboundMessage(args: {
   ctx: ActionCtx;
+  from?: string;
   to: string[];
   cc: string[];
   subject: string;
@@ -911,10 +913,12 @@ async function sendOutboundMessage(args: {
     throw new Error("RESEND_API_KEY is not configured.");
   }
 
-  const from = process.env.RESEND_FROM_EMAIL;
-  if (from === undefined) {
-    throw new Error("RESEND_FROM_EMAIL is not configured.");
-  }
+  const identity = await requireActionIdentity(args.ctx);
+  const from = await resolveOutboundSenderAddress(
+    args.ctx,
+    identity.tokenIdentifier,
+    args.from,
+  );
 
   const attachments = await Promise.all(
     args.attachments.map(async (attachment) => {
@@ -980,6 +984,65 @@ async function sendOutboundMessage(args: {
 
   return { from, resendEmailId, responseBody };
 }
+
+async function resolveOutboundSenderAddress(
+  ctx: ActionCtx,
+  tokenIdentifier: string,
+  requestedFrom?: string,
+) {
+  const user = await ctx.runQuery(internal.emails.getOutboundSenderForUser, {
+    tokenIdentifier,
+    requestedFrom,
+  });
+
+  if (user === null) {
+    throw new Error("User not registered");
+  }
+
+  return user;
+}
+
+export const getOutboundSenderForUser = internalQuery({
+  args: {
+    tokenIdentifier: v.string(),
+    requestedFrom: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<string | null> => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", args.tokenIdentifier),
+      )
+      .unique();
+    if (user === null) {
+      return null;
+    }
+
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    if (addresses.length === 0) {
+      throw new Error("No sender address is associated with this user.");
+    }
+
+    const sortedAddresses = addresses.sort(
+      (left, right) => left.createdAt - right.createdAt,
+    );
+    const normalizedRequestedFrom = args.requestedFrom?.trim().toLowerCase();
+    if (normalizedRequestedFrom !== undefined && normalizedRequestedFrom !== "") {
+      const matchingAddress = sortedAddresses.find(
+        (address) => address.address === normalizedRequestedFrom,
+      );
+      if (matchingAddress === undefined) {
+        throw new Error("The selected sender address is not available.");
+      }
+      return matchingAddress.address;
+    }
+
+    return sortedAddresses[0]?.address ?? null;
+  },
+});
 
 function buildOutboundHtml(text: string, html?: string) {
   if (html !== undefined && html.trim().length > 0) {
