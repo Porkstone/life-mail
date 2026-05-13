@@ -948,10 +948,7 @@ async function sendOutboundMessage(args: {
       cc: args.cc.length > 0 ? args.cc : undefined,
       subject: args.subject,
       text: args.text,
-      html:
-        args.html !== undefined && args.html.trim().length > 0
-          ? args.html
-          : undefined,
+      html: buildOutboundHtml(args.text, args.html),
       attachments: attachments.length > 0 ? attachments : undefined,
       headers:
         args.originalResendMessageId !== undefined &&
@@ -982,6 +979,19 @@ async function sendOutboundMessage(args: {
   }
 
   return { from, resendEmailId, responseBody };
+}
+
+function buildOutboundHtml(text: string, html?: string) {
+  if (html !== undefined && html.trim().length > 0) {
+    return html;
+  }
+
+  const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (normalizedText.trim().length === 0) {
+    return undefined;
+  }
+
+  return escapeHtml(normalizedText).replace(/\n/g, "<br>");
 }
 
 type BodyFetchTarget = {
@@ -1112,6 +1122,15 @@ function buildOpenRouterUserPrompt(prompt: string, originalBody: string) {
   }
 
   return `${prompt}\n\nOriginal message body:\n${trimmedBody}`;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function htmlToText(html: string) {
