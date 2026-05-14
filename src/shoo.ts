@@ -64,7 +64,7 @@ export function useAuth() {
     }
     ran.current = true;
 
-    shoo.handleCallback().finally(() => {
+    void shoo.handleCallback().finally(() => {
       const state = readStoredTokenState();
       const authenticated =
         state.userId !== null &&
