@@ -3,6 +3,7 @@ import { createShooAuth, decodeIdentityClaims } from "@shoojs/react";
 import type { StartSignInOptions } from "@shoojs/react";
 
 const REFRESH_LEEWAY_MS = 30_000;
+const SESSION_MONITOR_INTERVAL_MS = 60_000;
 
 const shoo = createShooAuth({
   callbackPath: "/shoo/callback",
@@ -57,6 +58,33 @@ export function useAuth() {
     );
   });
   const ran = useRef(false);
+  const sessionMonitor = useRef<ReturnType<typeof shoo.startSessionMonitor> | null>(
+    null,
+  );
+
+  const stopSessionMonitor = useCallback(() => {
+    sessionMonitor.current?.stop();
+    sessionMonitor.current = null;
+  }, []);
+
+  const startSessionMonitor = useCallback(() => {
+    if (sessionMonitor.current !== null) {
+      return;
+    }
+
+    sessionMonitor.current = shoo.startSessionMonitor({
+      intervalMs: SESSION_MONITOR_INTERVAL_MS,
+      immediate: true,
+      onLoginRequired: () => {
+        shoo.clearIdentity();
+        setIsAuthenticated(false);
+        stopSessionMonitor();
+      },
+      onError: () => {
+        // Keep local state and let the next monitor tick retry.
+      },
+    });
+  }, [stopSessionMonitor]);
 
   useEffect(() => {
     if (ran.current) {
@@ -74,21 +102,34 @@ export function useAuth() {
       if (!authenticated && state.token !== null) {
         shoo.clearIdentity();
       }
+      if (authenticated) {
+        startSessionMonitor();
+      } else {
+        stopSessionMonitor();
+      }
       setIsAuthenticated(authenticated);
       setIsLoading(false);
     });
-  }, []);
+  }, [startSessionMonitor, stopSessionMonitor]);
+
+  useEffect(() => {
+    return () => {
+      stopSessionMonitor();
+    };
+  }, [stopSessionMonitor]);
 
   const fetchAccessToken = useCallback(
     async (opts: { forceRefreshToken: boolean }) => {
       const state = readStoredTokenState();
       if (state.token === null || state.userId === null) {
+        stopSessionMonitor();
         setIsAuthenticated(false);
         return null;
       }
 
       if (hasExpired(state.expiresAtMs)) {
         shoo.clearIdentity();
+        stopSessionMonitor();
         setIsAuthenticated(false);
         if (opts.forceRefreshToken) {
           void beginReauth().catch(() => undefined);
@@ -97,14 +138,16 @@ export function useAuth() {
       }
 
       setIsAuthenticated(true);
+      startSessionMonitor();
 
       if (opts.forceRefreshToken && expiresSoon(state.expiresAtMs)) {
         void beginReauth().catch(() => undefined);
+        return null;
       }
 
       return state.token;
     },
-    [],
+    [startSessionMonitor, stopSessionMonitor],
   );
 
   return { isLoading, isAuthenticated, fetchAccessToken };
