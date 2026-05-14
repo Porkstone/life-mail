@@ -42,6 +42,12 @@ Authentication uses [Shoo](https://shoo.dev/), which issues a **pairwise subject
 
 **Note:** Replacing `tokenIdentifier` on a user row means sessions that still hold an **old** JWT for a merged-away Shoo subject may need a refresh or sign-in again until the client uses the identity tied to the canonical row.
 
+### Shoo session monitoring
+
+The browser auth wrapper in [`src/shoo.ts`](src/shoo.ts) follows Shoo's Convex auth shape for `ConvexProviderWithAuth`: it handles the `/shoo/callback` exchange, reports `{ isLoading, isAuthenticated, fetchAccessToken }`, and returns the Shoo `id_token` to Convex. Convex remains the server-side trust boundary and verifies the token issuer, JWKS signature, algorithm, expiration, and accepted audience before `ctx.auth.getUserIdentity()` returns an identity.
+
+The wrapper also starts Shoo's background session monitor once a valid local identity is present. It polls Shoo immediately and then every 60 seconds using `startSessionMonitor`; if Shoo reports `login_required` because the token was revoked, expired, or invalid, the app clears local identity and marks the user signed out. Transient monitor errors are fail-open: local identity is kept and the next poll retries.
+
 ## Learn more
 
 To learn more about developing your project with Convex, check out:

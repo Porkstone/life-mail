@@ -798,18 +798,6 @@ dd {
   gap: 18px;
 }
 
-.reply-from-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 12px;
-}
-
-.reply-from-row .sender-history-label {
-  margin-top: 0;
-  margin-bottom: 1px;
-}
-
 .prompt-field {
   display: grid;
   gap: 10px;
@@ -1384,10 +1372,6 @@ dd {
   }
 
   .reply-screen {
-    grid-template-columns: 1fr;
-  }
-
-  .reply-from-row {
     grid-template-columns: 1fr;
   }
 

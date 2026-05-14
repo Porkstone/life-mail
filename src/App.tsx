@@ -1881,6 +1881,14 @@ function ReplyScreen({
           <div>
             <p className="eyebrow">Reply</p>
             <h2>{subject}</h2>
+            {typeof lastPreviousReceivedAt === "number" ? (
+              <p className="sender-history-label">
+                Last received from this sender{" "}
+                <time dateTime={new Date(lastPreviousReceivedAt).toISOString()}>
+                  {formatElapsedSince(lastPreviousReceivedAt)} ago
+                </time>
+              </p>
+            ) : null}
           </div>
 
           <div
@@ -1945,36 +1953,26 @@ function ReplyScreen({
             ) : null}
           </div>
 
-          <div className="reply-from-row">
-            <label className="editor-field">
-              <span>From</span>
-              {senderAddresses.length > 1 ? (
-                <select
-                  onChange={(event) => {
-                    setFrom(event.target.value);
-                    resetSendState();
-                  }}
-                  value={resolvedFrom}
-                >
-                  {senderAddresses.map((address) => (
-                    <option key={address._id} value={address.address}>
-                      {address.address}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input readOnly type="text" value={resolvedFrom} />
-              )}
-            </label>
-            {typeof lastPreviousReceivedAt === "number" ? (
-              <p className="sender-history-label">
-                Last received from this sender{" "}
-                <time dateTime={new Date(lastPreviousReceivedAt).toISOString()}>
-                  {formatElapsedSince(lastPreviousReceivedAt)} ago
-                </time>
-              </p>
-            ) : null}
-          </div>
+          <label className="editor-field">
+            <span>From</span>
+            {senderAddresses.length > 1 ? (
+              <select
+                onChange={(event) => {
+                  setFrom(event.target.value);
+                  resetSendState();
+                }}
+                value={resolvedFrom}
+              >
+                {senderAddresses.map((address) => (
+                  <option key={address._id} value={address.address}>
+                    {address.address}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input readOnly type="text" value={resolvedFrom} />
+            )}
+          </label>
 
           <label className="editor-field">
             <span>To</span>
