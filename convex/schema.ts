@@ -35,6 +35,7 @@ export default defineSchema({
     webhookCreatedAt: v.string(),
     emailCreatedAt: v.string(),
     from: v.string(),
+    fromAddress: v.optional(v.string()),
     to: v.array(v.string()),
     cc: v.array(v.string()),
     bcc: v.array(v.string()),
@@ -56,6 +57,7 @@ export default defineSchema({
     .index("by_webhook_id", ["webhookId"])
     .index("by_resend_email_id", ["resendEmailId"])
     .index("by_received_at", ["receivedAt"])
+    .index("by_fromAddress_and_receivedAt", ["fromAddress", "receivedAt"])
     .index("by_body_fetch_status_and_received_at", [
       "bodyFetchStatus",
       "receivedAt",

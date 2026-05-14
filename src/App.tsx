@@ -1660,6 +1660,10 @@ function ReplyScreen({
   const sendReply = useAction(api.emails.sendReply);
   const generateReplyFromPrompt = useAction(api.emails.generateReplyFromPrompt);
   const previewOpenRouterPrompt = useAction(api.emails.previewOpenRouterPrompt);
+  const lastPreviousReceivedAt = useQuery(
+    api.emails.getLastPreviousReceivedFromSender,
+    { messageId: message._id },
+  );
   const generateAttachmentUploadUrl = useMutation(
     api.emails.generateAttachmentUploadUrl,
   );
@@ -1941,26 +1945,36 @@ function ReplyScreen({
             ) : null}
           </div>
 
-          <label className="editor-field">
-            <span>From</span>
-            {senderAddresses.length > 1 ? (
-              <select
-                onChange={(event) => {
-                  setFrom(event.target.value);
-                  resetSendState();
-                }}
-                value={resolvedFrom}
-              >
-                {senderAddresses.map((address) => (
-                  <option key={address._id} value={address.address}>
-                    {address.address}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input readOnly type="text" value={resolvedFrom} />
-            )}
-          </label>
+          <div className="reply-from-row">
+            <label className="editor-field">
+              <span>From</span>
+              {senderAddresses.length > 1 ? (
+                <select
+                  onChange={(event) => {
+                    setFrom(event.target.value);
+                    resetSendState();
+                  }}
+                  value={resolvedFrom}
+                >
+                  {senderAddresses.map((address) => (
+                    <option key={address._id} value={address.address}>
+                      {address.address}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input readOnly type="text" value={resolvedFrom} />
+              )}
+            </label>
+            {typeof lastPreviousReceivedAt === "number" ? (
+              <p className="sender-history-label">
+                Last received from this sender{" "}
+                <time dateTime={new Date(lastPreviousReceivedAt).toISOString()}>
+                  {formatElapsedSince(lastPreviousReceivedAt)} ago
+                </time>
+              </p>
+            ) : null}
+          </div>
 
           <label className="editor-field">
             <span>To</span>
@@ -2314,6 +2328,27 @@ function formatDate(value: number) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatElapsedSince(value: number) {
+  const elapsedDays = Math.max(
+    0,
+    Math.floor((Date.now() - value) / (24 * 60 * 60 * 1000)),
+  );
+
+  if (elapsedDays < 14) {
+    return formatRelativeUnit(Math.max(elapsedDays, 1), "day");
+  }
+
+  if (elapsedDays < 61) {
+    return formatRelativeUnit(Math.floor(elapsedDays / 7), "week");
+  }
+
+  return formatRelativeUnit(Math.floor(elapsedDays / 30), "month");
+}
+
+function formatRelativeUnit(value: number, unit: "day" | "week" | "month") {
+  return `${value} ${unit}${value === 1 ? "" : "s"}`;
 }
 
 function replySubject(subject: string) {

@@ -150,6 +150,64 @@ export const getReceived = query({
   },
 });
 
+export const getLastPreviousReceivedFromSender = query({
+  args: { messageId: v.id("receivedMessages") },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    const message = await ctx.db.get(args.messageId);
+    if (message === null) {
+      return null;
+    }
+
+    const senderAddress = message.fromAddress ?? normalizeSenderAddress(message.from);
+    if (senderAddress.length === 0) {
+      return null;
+    }
+
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    const addressSet = new Set(addresses.map((address) => address.address));
+
+    const indexedMatches = await ctx.db
+      .query("receivedMessages")
+      .withIndex("by_fromAddress_and_receivedAt", (q) =>
+        q.eq("fromAddress", senderAddress).lt("receivedAt", message.receivedAt),
+      )
+      .order("desc")
+      .take(20);
+
+    for (const previousMessage of indexedMatches) {
+      if (await userCanAccessMessage(ctx, addressSet, previousMessage._id)) {
+        return previousMessage.receivedAt;
+      }
+    }
+
+    const recentPreviousMessages = await ctx.db
+      .query("receivedMessages")
+      .withIndex("by_received_at", (q) =>
+        q.lt("receivedAt", message.receivedAt),
+      )
+      .order("desc")
+      .take(500);
+
+    for (const previousMessage of recentPreviousMessages) {
+      const previousSenderAddress =
+        previousMessage.fromAddress ?? normalizeSenderAddress(previousMessage.from);
+      if (
+        previousSenderAddress === senderAddress &&
+        (await userCanAccessMessage(ctx, addressSet, previousMessage._id))
+      ) {
+        return previousMessage.receivedAt;
+      }
+    }
+
+    return null;
+  },
+});
+
 export const blockSenderAndArchive = mutation({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args) => {
@@ -800,6 +858,7 @@ export const storeResendReceivedEmail = internalMutation({
       webhookCreatedAt: args.webhookCreatedAt,
       emailCreatedAt: args.data.created_at,
       from: args.data.from,
+      fromAddress: senderAddress,
       to: args.data.to,
       cc: args.data.cc,
       bcc: args.data.bcc,
@@ -1234,6 +1293,19 @@ async function requireMessageAccess(
   }
 
   throw new Error("Unauthorized");
+}
+
+async function userCanAccessMessage(
+  ctx: QueryCtx,
+  addressSet: Set<string>,
+  messageId: Id<"receivedMessages">,
+) {
+  const recipients = await ctx.db
+    .query("receivedMessageRecipients")
+    .withIndex("by_messageId", (q) => q.eq("messageId", messageId))
+    .take(100);
+
+  return recipients.some((recipient) => addressSet.has(recipient.address));
 }
 
 function normalizeInboundAddress(value: string) {
