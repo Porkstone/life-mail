@@ -1879,7 +1879,7 @@ function ReplyScreen({
           }}
         >
           <div>
-            <p className="eyebrow">Reply</p>
+            <p className="eyebrow">Reply to {displaySenderAddress(message.from)}</p>
             <h2>{subject}</h2>
             {typeof lastPreviousReceivedAt === "number" ? (
               <p className="sender-history-label">
@@ -1972,11 +1972,6 @@ function ReplyScreen({
             ) : (
               <input readOnly type="text" value={resolvedFrom} />
             )}
-          </label>
-
-          <label className="editor-field">
-            <span>To</span>
-            <input readOnly type="text" value={message.from} />
           </label>
 
           <label className="editor-field">
@@ -2310,6 +2305,10 @@ function EmptyPreview({ title = "Select a message" }: { title?: string }) {
 
 function displaySender(from: string) {
   return from.replace(/\s*<.*?>\s*/g, "").trim() || from;
+}
+
+function displaySenderAddress(from: string) {
+  return from.match(/<([^<>]+)>/)?.[1].trim() || from.trim() || from;
 }
 
 function initials(from: string) {
