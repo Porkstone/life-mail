@@ -1436,6 +1436,10 @@ function MessagePreview({
     () => [message.to.join(", "), message.cc.join(", ")].filter(Boolean),
     [message.cc, message.to],
   );
+  const canDownloadBodyHtml =
+    bodyState.status === "ready" &&
+    bodyState.body.html !== null &&
+    bodyState.body.html.trim().length > 0;
 
   async function openPdfAttachment(
     attachment: {
@@ -1478,6 +1482,26 @@ function MessagePreview({
     }
   }
 
+  function downloadBodyHtml() {
+    if (
+      bodyState.status !== "ready" ||
+      bodyState.body.html === null ||
+      bodyState.body.html.trim().length === 0
+    ) {
+      return;
+    }
+
+    const blob = new Blob([bodyState.body.html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${toDownloadFilename(message.subject, "message")}.html`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <article className="message-preview">
       <header className="preview-header">
@@ -1485,9 +1509,21 @@ function MessagePreview({
           <p className="eyebrow">{formatDate(message.receivedAt)}</p>
           <h2>{message.subject}</h2>
         </div>
-        <button className="primary-action" onClick={onReply} type="button">
-          Reply
-        </button>
+        <div className="preview-actions">
+          <button
+            aria-label="Download message HTML"
+            className="icon-action body-download-action"
+            disabled={!canDownloadBodyHtml}
+            onClick={downloadBodyHtml}
+            title="Download message HTML"
+            type="button"
+          >
+            <Download aria-hidden="true" size={17} strokeWidth={2.2} />
+          </button>
+          <button className="primary-action" onClick={onReply} type="button">
+            Reply
+          </button>
+        </div>
       </header>
 
       {blockError !== null ? (
@@ -2309,6 +2345,20 @@ function displaySender(from: string) {
 
 function displaySenderAddress(from: string) {
   return from.match(/<([^<>]+)>/)?.[1].trim() || from.trim() || from;
+}
+
+function toDownloadFilename(value: string, fallback: string) {
+  const sanitized = value
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, "-")
+    .split("")
+    .filter((character) => character.charCodeAt(0) >= 32)
+    .join("")
+    .replace(/\s+/g, " ")
+    .slice(0, 80)
+    .replace(/[. ]+$/g, "");
+
+  return sanitized.length > 0 ? sanitized : fallback;
 }
 
 function initials(from: string) {
