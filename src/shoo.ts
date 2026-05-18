@@ -3,7 +3,9 @@ import { createShooAuth, decodeIdentityClaims } from "@shoojs/react";
 import type { StartSignInOptions } from "@shoojs/react";
 
 const MANUAL_SIGN_OUT_KEY = "shoo_manual_sign_out";
-const REFRESH_LEEWAY_MS = 90_000;
+const AUTH_ATTEMPT_STORAGE_KEY = "shoo_auth_attempted_at";
+const AUTH_ATTEMPT_COOLDOWN_MS = 75_000;
+const REFRESH_LEEWAY_MS = 30_000;
 const SESSION_MONITOR_INTERVAL_MS = 60_000;
 
 const shoo = createShooAuth({
@@ -30,6 +32,19 @@ export function needsManualSignIn() {
   return hasManualSignOut();
 }
 
+function hasRecentAuthAttempt() {
+  const attemptedAt = Number(
+    window.sessionStorage.getItem(AUTH_ATTEMPT_STORAGE_KEY),
+  );
+
+  return Number.isFinite(attemptedAt)
+    && Date.now() - attemptedAt < AUTH_ATTEMPT_COOLDOWN_MS;
+}
+
+function markAuthAttempt() {
+  window.sessionStorage.setItem(AUTH_ATTEMPT_STORAGE_KEY, String(Date.now()));
+}
+
 function readStoredTokenState() {
   const identity = shoo.getIdentity();
   const token = identity.token ?? null;
@@ -50,23 +65,12 @@ function expiresSoon(expiresAtMs: number | null) {
   return expiresAtMs !== null && expiresAtMs - Date.now() <= REFRESH_LEEWAY_MS;
 }
 
-function scheduleTokenRefresh({
-  expiresAtMs,
-  onRefresh,
-}: {
-  expiresAtMs: number;
-  onRefresh: () => void;
-}) {
-  const delayMs = Math.max(0, expiresAtMs - Date.now() - REFRESH_LEEWAY_MS);
-  return window.setTimeout(onRefresh, delayMs);
-}
-
 function beginReauth({
   onStarted,
 }: {
   onStarted?: () => void;
 } = {}) {
-  if (hasManualSignOut()) {
+  if (hasManualSignOut() || hasRecentAuthAttempt()) {
     return Promise.resolve();
   }
 
@@ -75,10 +79,11 @@ function beginReauth({
   }
 
   onStarted?.();
+  markAuthAttempt();
 
   const promise = shoo
     .startSignIn({
-      requestPii: true,
+      requestPii: false,
       returnTo: currentRoute(),
     })
     .then(() => undefined)
@@ -120,34 +125,9 @@ export function useAuth() {
     );
   });
   const ran = useRef(false);
-  const refreshTimer = useRef<number | null>(null);
   const sessionMonitor = useRef<ReturnType<typeof shoo.startSessionMonitor> | null>(
     null,
   );
-
-  const clearRefreshTimer = useCallback(() => {
-    if (refreshTimer.current !== null) {
-      window.clearTimeout(refreshTimer.current);
-      refreshTimer.current = null;
-    }
-  }, []);
-
-  const scheduleRefresh = useCallback(() => {
-    clearRefreshTimer();
-    const state = readStoredTokenState();
-    if (state.expiresAtMs === null || hasExpired(state.expiresAtMs)) {
-      return;
-    }
-
-    refreshTimer.current = scheduleTokenRefresh({
-      expiresAtMs: state.expiresAtMs,
-      onRefresh: () => {
-        void beginReauth({
-          onStarted: () => setIsReauthing(true),
-        }).catch(() => setIsReauthing(false));
-      },
-    });
-  }, [clearRefreshTimer]);
 
   const stopSessionMonitor = useCallback(() => {
     sessionMonitor.current?.stop();
@@ -164,7 +144,6 @@ export function useAuth() {
       immediate: true,
       onLoginRequired: () => {
         stopSessionMonitor();
-        clearRefreshTimer();
         if (hasManualSignOut()) {
           shoo.clearIdentity();
           setIsAuthenticated(false);
@@ -183,7 +162,7 @@ export function useAuth() {
         // Keep local state and let the next monitor tick retry.
       },
     });
-  }, [clearRefreshTimer, stopSessionMonitor]);
+  }, [stopSessionMonitor]);
 
   useEffect(() => {
     if (ran.current) {
@@ -210,20 +189,13 @@ export function useAuth() {
       }
       if (authenticated) {
         startSessionMonitor();
-        scheduleRefresh();
       } else {
         stopSessionMonitor();
-        clearRefreshTimer();
       }
       setIsAuthenticated(authenticated);
       setIsLoading(false);
       });
-  }, [
-    clearRefreshTimer,
-    scheduleRefresh,
-    startSessionMonitor,
-    stopSessionMonitor,
-  ]);
+  }, [startSessionMonitor, stopSessionMonitor]);
 
   useEffect(() => {
     if (isLoading || isAuthenticated || isCallbackRoute() || hasManualSignOut()) {
@@ -238,9 +210,8 @@ export function useAuth() {
   useEffect(() => {
     return () => {
       stopSessionMonitor();
-      clearRefreshTimer();
     };
-  }, [clearRefreshTimer, stopSessionMonitor]);
+  }, [stopSessionMonitor]);
 
   const fetchAccessToken = useCallback(
     async (opts: { forceRefreshToken: boolean }) => {
@@ -253,7 +224,6 @@ export function useAuth() {
 
       if (hasExpired(state.expiresAtMs)) {
         stopSessionMonitor();
-        clearRefreshTimer();
         shoo.clearIdentity();
         setIsAuthenticated(false);
         if (!hasManualSignOut()) {
@@ -266,7 +236,6 @@ export function useAuth() {
 
       setIsAuthenticated(true);
       startSessionMonitor();
-      scheduleRefresh();
 
       if (opts.forceRefreshToken && expiresSoon(state.expiresAtMs)) {
         void beginReauth({
@@ -276,12 +245,7 @@ export function useAuth() {
 
       return state.token;
     },
-    [
-      clearRefreshTimer,
-      scheduleRefresh,
-      startSessionMonitor,
-      stopSessionMonitor,
-    ],
+    [startSessionMonitor, stopSessionMonitor],
   );
 
   return {
@@ -295,6 +259,7 @@ export function useAuth() {
 
 export async function signIn(opts?: StartSignInOptions) {
   window.sessionStorage.removeItem(MANUAL_SIGN_OUT_KEY);
+  window.sessionStorage.removeItem(AUTH_ATTEMPT_STORAGE_KEY);
   await shoo.startSignIn(opts);
 }
 
