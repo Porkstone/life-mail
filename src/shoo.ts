@@ -12,6 +12,7 @@ const shoo = createShooAuth({
 });
 
 let reauthInFlight: Promise<void> | null = null;
+let callbackInFlight: Promise<void> | null = null;
 
 function currentRoute() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -23,6 +24,10 @@ function isCallbackRoute() {
 
 function hasManualSignOut() {
   return window.sessionStorage.getItem(MANUAL_SIGN_OUT_KEY) === "1";
+}
+
+export function needsManualSignIn() {
+  return hasManualSignOut();
 }
 
 function readStoredTokenState() {
@@ -82,6 +87,25 @@ function beginReauth({
     });
   reauthInFlight = promise;
   return reauthInFlight;
+}
+
+function handleCallbackOnce() {
+  if (!isCallbackRoute()) {
+    return Promise.resolve();
+  }
+
+  if (callbackInFlight !== null) {
+    return callbackInFlight;
+  }
+
+  const promise = shoo
+    .handleCallback()
+    .then(() => undefined)
+    .finally(() => {
+      callbackInFlight = null;
+    });
+  callbackInFlight = promise;
+  return callbackInFlight;
 }
 
 export function useAuth() {
@@ -167,7 +191,14 @@ export function useAuth() {
     }
     ran.current = true;
 
-    void shoo.handleCallback().finally(() => {
+    void handleCallbackOnce()
+      .catch((error: unknown) => {
+        console.error("Shoo callback failed", error);
+        if (isCallbackRoute()) {
+          window.location.replace("/");
+        }
+      })
+      .finally(() => {
       const state = readStoredTokenState();
       const authenticated =
         state.userId !== null &&
@@ -186,7 +217,7 @@ export function useAuth() {
       }
       setIsAuthenticated(authenticated);
       setIsLoading(false);
-    });
+      });
   }, [
     clearRefreshTimer,
     scheduleRefresh,

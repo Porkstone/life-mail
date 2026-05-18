@@ -22,7 +22,7 @@ import {
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import { signIn, signOut, useAuth } from "./shoo";
+import { needsManualSignIn, signIn, signOut } from "./shoo";
 
 const PAGE_SIZE = 50;
 const COMPOSE_DRAFT_KEY = "life-mail:compose-draft";
@@ -35,7 +35,6 @@ type SenderAddress = {
 };
 
 export default function App() {
-  const shooAuth = useAuth();
   const convexAuth = useConvexAuth();
   const ensureCurrentUser = useMutation(api.auth.ensureCurrentUser);
   const viewer = useQuery(
@@ -51,12 +50,12 @@ export default function App() {
     void ensureCurrentUser({});
   }, [convexAuth.isAuthenticated, ensureCurrentUser]);
 
-  if (shooAuth.isLoading || convexAuth.isLoading) {
+  if (convexAuth.isLoading) {
     return <AuthShell title="Loading" detail="Checking your session..." />;
   }
 
-  if (!shooAuth.isAuthenticated) {
-    if (shooAuth.isReauthing || !shooAuth.needsManualSignIn) {
+  if (!convexAuth.isAuthenticated) {
+    if (!needsManualSignIn()) {
       return (
         <AuthShell
           title="Life Mail"
@@ -79,20 +78,6 @@ export default function App() {
           >
             <LogIn aria-hidden="true" size={18} strokeWidth={2.2} />
             Sign in
-          </button>
-        }
-      />
-    );
-  }
-
-  if (!convexAuth.isAuthenticated) {
-    return (
-      <AuthShell
-        title="Authentication pending"
-        detail="Convex has not accepted the Shoo token yet. Try signing out and back in if this does not clear."
-        action={
-          <button className="ghost-action" onClick={signOut} type="button">
-            Sign out
           </button>
         }
       />
