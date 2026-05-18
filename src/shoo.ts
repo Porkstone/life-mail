@@ -96,7 +96,7 @@ export function useAuth() {
     );
   });
   const ran = useRef(false);
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshTimer = useRef<number | null>(null);
   const sessionMonitor = useRef<ReturnType<typeof shoo.startSessionMonitor> | null>(
     null,
   );
