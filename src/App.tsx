@@ -56,6 +56,15 @@ export default function App() {
   }
 
   if (!shooAuth.isAuthenticated) {
+    if (shooAuth.isReauthing || !shooAuth.needsManualSignIn) {
+      return (
+        <AuthShell
+          title="Life Mail"
+          detail="Refreshing your session..."
+        />
+      );
+    }
+
     return (
       <AuthShell
         title="Life Mail"
