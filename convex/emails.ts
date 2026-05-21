@@ -155,7 +155,7 @@ export const getLastPreviousReceivedFromSender = query({
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     await requireMessageAccess(ctx, user._id, args.messageId);
-    const message = await ctx.db.get(args.messageId);
+    const message = await ctx.db.get("receivedMessages", args.messageId);
     if (message === null) {
       return null;
     }

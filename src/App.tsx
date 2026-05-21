@@ -1435,7 +1435,7 @@ function MessagePreview({
     bodyState.body.html !== null &&
     bodyState.body.html.trim().length > 0;
 
-  async function openPdfAttachment(
+  async function openAttachment(
     attachment: {
       _id: Id<"receivedMessageAttachments">;
       filename: string;
@@ -1584,7 +1584,7 @@ function MessagePreview({
                         className="attachment-action"
                         disabled={isLoading}
                         onClick={() => {
-                          void openPdfAttachment(attachment, "preview");
+                          void openAttachment(attachment, "preview");
                         }}
                         title="Preview PDF"
                         type="button"
@@ -1596,9 +1596,9 @@ function MessagePreview({
                         className="attachment-action"
                         disabled={isLoading}
                         onClick={() => {
-                          void openPdfAttachment(attachment, "download");
+                          void openAttachment(attachment, "download");
                         }}
-                        title="Download PDF"
+                        title="Download attachment"
                         type="button"
                       >
                         <Download
@@ -1608,7 +1608,26 @@ function MessagePreview({
                         />
                       </button>
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="attachment-actions">
+                      <button
+                        aria-label={`Download ${attachment.filename}`}
+                        className="attachment-action"
+                        disabled={isLoading}
+                        onClick={() => {
+                          void openAttachment(attachment, "download");
+                        }}
+                        title="Download attachment"
+                        type="button"
+                      >
+                        <Download
+                          aria-hidden="true"
+                          size={16}
+                          strokeWidth={2.2}
+                        />
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
