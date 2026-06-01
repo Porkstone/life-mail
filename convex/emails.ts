@@ -44,8 +44,6 @@ const SETTINGS_KEY = "global";
 const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
-const PREVIOUS_SENDER_LEGACY_LOOKBACK_PER_ADDRESS = 50;
-const PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT = 8;
 const RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE = 10;
 
 export const listReceived = query({
@@ -182,41 +180,11 @@ export const getLastPreviousReceivedFromSender = query({
           .lt("receivedAt", messageSenderIndex.receivedAt),
       )
       .order("desc")
-      .take(100);
+      .take(10);
 
     for (const previousMessage of senderMatches) {
       if (await userCanAccessMessage(ctx, addressSet, previousMessage.messageId)) {
         return previousMessage.receivedAt;
-      }
-    }
-
-    const legacyCandidateIds = new Map<Id<"receivedMessages">, number>();
-    for (const address of addressSet) {
-      const recipients = await ctx.db
-        .query("receivedMessageRecipients")
-        .withIndex("by_address_and_receivedAt", (q) =>
-          q
-            .eq("address", address)
-            .lt("receivedAt", messageSenderIndex.receivedAt),
-        )
-        .order("desc")
-        .take(PREVIOUS_SENDER_LEGACY_LOOKBACK_PER_ADDRESS);
-      for (const recipient of recipients) {
-        legacyCandidateIds.set(recipient.messageId, recipient.receivedAt);
-      }
-    }
-
-    const legacyCandidates = [...legacyCandidateIds.entries()]
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT);
-
-    for (const [previousMessageId] of legacyCandidates) {
-      const previousSenderIndex = await ctx.db
-        .query("receivedMessageSenderIndex")
-        .withIndex("by_messageId", (q) => q.eq("messageId", previousMessageId))
-        .unique();
-      if (previousSenderIndex?.fromAddress === senderAddress) {
-        return previousSenderIndex.receivedAt;
       }
     }
 
