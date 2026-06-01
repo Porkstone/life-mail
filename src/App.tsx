@@ -625,6 +625,9 @@ function AdminScreen() {
   const backfillRecipients = useMutation(
     api.emails.backfillReceivedMessageRecipients,
   );
+  const backfillSenderIndex = useMutation(
+    api.emails.backfillReceivedMessageSenderIndex,
+  );
   const [selectedUserId, setSelectedUserId] = useState<Id<"users"> | "">("");
   const [addressLocalPart, setAddressLocalPart] = useState("");
   const [openRouterApiKey, setOpenRouterApiKey] = useState("");
@@ -688,8 +691,21 @@ function AdminScreen() {
   async function handleBackfillRecipients() {
     setAdminState({ status: "indexing" });
     try {
-      const result = await backfillRecipients({});
-      setAdminState({ status: "indexed", count: result.indexed });
+      const recipientResult = await backfillRecipients({});
+      let senderIndexed = 0;
+      let beforeReceivedAt: number | undefined;
+      for (;;) {
+        const senderResult = await backfillSenderIndex({ beforeReceivedAt });
+        senderIndexed += senderResult.indexed;
+        if (!senderResult.hasMore || senderResult.nextBeforeReceivedAt === null) {
+          break;
+        }
+        beforeReceivedAt = senderResult.nextBeforeReceivedAt;
+      }
+      setAdminState({
+        status: "indexed",
+        count: recipientResult.indexed + senderIndexed,
+      });
     } catch (error: unknown) {
       setAdminState({
         status: "error",

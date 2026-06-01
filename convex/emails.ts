@@ -45,7 +45,8 @@ const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
 const PREVIOUS_SENDER_LEGACY_LOOKBACK_PER_ADDRESS = 50;
-const PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT = 100;
+const PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT = 8;
+const RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE = 10;
 
 export const listReceived = query({
   args: { limit: v.optional(v.number()) },
@@ -173,16 +174,16 @@ export const getLastPreviousReceivedFromSender = query({
       .take(100);
     const addressSet = new Set(addresses.map((address) => address.address));
 
-    const indexedMatches = await ctx.db
-      .query("receivedMessages")
+    const senderMatches = await ctx.db
+      .query("receivedMessageSenderIndex")
       .withIndex("by_fromAddress_and_receivedAt", (q) =>
         q.eq("fromAddress", senderAddress).lt("receivedAt", message.receivedAt),
       )
       .order("desc")
-      .take(20);
+      .take(100);
 
-    for (const previousMessage of indexedMatches) {
-      if (await userCanAccessMessage(ctx, addressSet, previousMessage._id)) {
+    for (const previousMessage of senderMatches) {
+      if (await userCanAccessMessage(ctx, addressSet, previousMessage.messageId)) {
         return previousMessage.receivedAt;
       }
     }
@@ -346,6 +347,59 @@ export const backfillReceivedMessageRecipients = mutation({
     }
 
     return { indexed };
+  },
+});
+
+export const backfillReceivedMessageSenderIndex = mutation({
+  args: { beforeReceivedAt: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const query =
+      args.beforeReceivedAt === undefined
+        ? ctx.db.query("receivedMessages").withIndex("by_received_at")
+        : ctx.db
+            .query("receivedMessages")
+            .withIndex("by_received_at", (q) =>
+              q.lt("receivedAt", args.beforeReceivedAt!),
+            );
+    const messages = await query
+      .order("desc")
+      .take(RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE);
+    let indexed = 0;
+    let skipped = 0;
+    let nextBeforeReceivedAt: number | null = null;
+
+    for (const message of messages) {
+      nextBeforeReceivedAt = message.receivedAt;
+      const existing = await ctx.db
+        .query("receivedMessageSenderIndex")
+        .withIndex("by_messageId", (q) => q.eq("messageId", message._id))
+        .take(1);
+      if (existing.length > 0) {
+        skipped += 1;
+        continue;
+      }
+
+      const fromAddress = message.fromAddress ?? normalizeSenderAddress(message.from);
+      if (fromAddress.length === 0) {
+        skipped += 1;
+        continue;
+      }
+
+      await ctx.db.insert("receivedMessageSenderIndex", {
+        messageId: message._id,
+        fromAddress,
+        receivedAt: message.receivedAt,
+      });
+      indexed += 1;
+    }
+
+    return {
+      indexed,
+      skipped,
+      nextBeforeReceivedAt,
+      hasMore: messages.length === RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE,
+    };
   },
 });
 
@@ -883,6 +937,14 @@ export const storeResendReceivedEmail = internalMutation({
       bodyFetchStatus: "pending",
       rawEvent: args.rawEvent,
     });
+
+    if (senderAddress.length > 0) {
+      await ctx.db.insert("receivedMessageSenderIndex", {
+        messageId,
+        fromAddress: senderAddress,
+        receivedAt: Date.parse(args.data.created_at) || Date.now(),
+      });
+    }
 
     for (const attachment of args.data.attachments) {
       await ctx.db.insert("receivedMessageAttachments", {

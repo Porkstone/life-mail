@@ -28,6 +28,14 @@ export default defineSchema({
     .index("by_messageId", ["messageId"])
     .index("by_address_and_receivedAt", ["address", "receivedAt"]),
 
+  receivedMessageSenderIndex: defineTable({
+    messageId: v.id("receivedMessages"),
+    fromAddress: v.string(),
+    receivedAt: v.number(),
+  })
+    .index("by_messageId", ["messageId"])
+    .index("by_fromAddress_and_receivedAt", ["fromAddress", "receivedAt"]),
+
   receivedMessages: defineTable({
     resendEmailId: v.string(),
     resendMessageId: v.string(),
