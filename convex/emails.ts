@@ -44,6 +44,8 @@ const SETTINGS_KEY = "global";
 const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
+const PREVIOUS_SENDER_LEGACY_LOOKBACK_PER_ADDRESS = 50;
+const PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT = 100;
 
 export const listReceived = query({
   args: { limit: v.optional(v.number()) },
@@ -185,21 +187,33 @@ export const getLastPreviousReceivedFromSender = query({
       }
     }
 
-    const recentPreviousMessages = await ctx.db
-      .query("receivedMessages")
-      .withIndex("by_received_at", (q) =>
-        q.lt("receivedAt", message.receivedAt),
-      )
-      .order("desc")
-      .take(500);
+    const legacyCandidateIds = new Map<Id<"receivedMessages">, number>();
+    for (const address of addressSet) {
+      const recipients = await ctx.db
+        .query("receivedMessageRecipients")
+        .withIndex("by_address_and_receivedAt", (q) =>
+          q.eq("address", address).lt("receivedAt", message.receivedAt),
+        )
+        .order("desc")
+        .take(PREVIOUS_SENDER_LEGACY_LOOKBACK_PER_ADDRESS);
+      for (const recipient of recipients) {
+        legacyCandidateIds.set(recipient.messageId, recipient.receivedAt);
+      }
+    }
 
-    for (const previousMessage of recentPreviousMessages) {
+    const legacyCandidates = [...legacyCandidateIds.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT);
+
+    for (const [previousMessageId] of legacyCandidates) {
+      const previousMessage = await ctx.db.get("receivedMessages", previousMessageId);
+      if (previousMessage === null) {
+        continue;
+      }
+
       const previousSenderAddress =
         previousMessage.fromAddress ?? normalizeSenderAddress(previousMessage.from);
-      if (
-        previousSenderAddress === senderAddress &&
-        (await userCanAccessMessage(ctx, addressSet, previousMessage._id))
-      ) {
+      if (previousSenderAddress === senderAddress) {
         return previousMessage.receivedAt;
       }
     }
