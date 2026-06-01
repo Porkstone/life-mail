@@ -158,16 +158,16 @@ export const getLastPreviousReceivedFromSender = query({
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     await requireMessageAccess(ctx, user._id, args.messageId);
-    const message = await ctx.db.get("receivedMessages", args.messageId);
-    if (message === null) {
+
+    const messageSenderIndex = await ctx.db
+      .query("receivedMessageSenderIndex")
+      .withIndex("by_messageId", (q) => q.eq("messageId", args.messageId))
+      .unique();
+    if (messageSenderIndex === null) {
       return null;
     }
 
-    const senderAddress = message.fromAddress ?? normalizeSenderAddress(message.from);
-    if (senderAddress.length === 0) {
-      return null;
-    }
-
+    const senderAddress = messageSenderIndex.fromAddress;
     const addresses = await ctx.db
       .query("userEmailAddresses")
       .withIndex("by_userId", (q) => q.eq("userId", user._id))
@@ -177,7 +177,9 @@ export const getLastPreviousReceivedFromSender = query({
     const senderMatches = await ctx.db
       .query("receivedMessageSenderIndex")
       .withIndex("by_fromAddress_and_receivedAt", (q) =>
-        q.eq("fromAddress", senderAddress).lt("receivedAt", message.receivedAt),
+        q
+          .eq("fromAddress", senderAddress)
+          .lt("receivedAt", messageSenderIndex.receivedAt),
       )
       .order("desc")
       .take(100);
@@ -193,7 +195,9 @@ export const getLastPreviousReceivedFromSender = query({
       const recipients = await ctx.db
         .query("receivedMessageRecipients")
         .withIndex("by_address_and_receivedAt", (q) =>
-          q.eq("address", address).lt("receivedAt", message.receivedAt),
+          q
+            .eq("address", address)
+            .lt("receivedAt", messageSenderIndex.receivedAt),
         )
         .order("desc")
         .take(PREVIOUS_SENDER_LEGACY_LOOKBACK_PER_ADDRESS);
@@ -207,15 +211,12 @@ export const getLastPreviousReceivedFromSender = query({
       .slice(0, PREVIOUS_SENDER_LEGACY_CANDIDATE_LIMIT);
 
     for (const [previousMessageId] of legacyCandidates) {
-      const previousMessage = await ctx.db.get("receivedMessages", previousMessageId);
-      if (previousMessage === null) {
-        continue;
-      }
-
-      const previousSenderAddress =
-        previousMessage.fromAddress ?? normalizeSenderAddress(previousMessage.from);
-      if (previousSenderAddress === senderAddress) {
-        return previousMessage.receivedAt;
+      const previousSenderIndex = await ctx.db
+        .query("receivedMessageSenderIndex")
+        .withIndex("by_messageId", (q) => q.eq("messageId", previousMessageId))
+        .unique();
+      if (previousSenderIndex?.fromAddress === senderAddress) {
+        return previousSenderIndex.receivedAt;
       }
     }
 
