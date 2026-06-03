@@ -1269,6 +1269,8 @@ function ComposePane({
 
 function SettingsScreen() {
   const navigate = useNavigate();
+  const convexSiteUrl =
+    (import.meta.env.VITE_CONVEX_SITE_URL as string | undefined) ?? "";
   const [blockedSenderSearch, setBlockedSenderSearch] = useState("");
   const [removingBlockedSenderId, setRemovingBlockedSenderId] =
     useState<Id<"blockedSenders"> | null>(null);
@@ -1320,7 +1322,12 @@ function SettingsScreen() {
 
       <section className="settings-panel" aria-label="Settings">
         <h2>Settings</h2>
-        <p>Settings controls can live here.</p>
+        <dl className="settings-value-list">
+          <div className="settings-value-row">
+            <dt>VITE_CONVEX_SITE_URL</dt>
+            <dd>{convexSiteUrl || "Not configured"}</dd>
+          </div>
+        </dl>
       </section>
 
       <section className="settings-panel" aria-label="Blocked senders">

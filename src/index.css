@@ -1106,6 +1106,31 @@ dd {
   color: #616161;
 }
 
+.settings-value-list {
+  margin: 0;
+}
+
+.settings-value-row {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-value-row dt {
+  color: #616161;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-value-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #242424;
+  font-size: 14px;
+  font-weight: 650;
+}
+
 .settings-panel-header,
 .blocked-sender-row {
   display: flex;
