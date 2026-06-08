@@ -102,6 +102,10 @@ function MailScreen() {
   const location = useLocation();
   const [folder, setFolder] = useState<Folder>("inbox");
   const messages = useQuery(api.emails.listReceived, { limit: PAGE_SIZE });
+  const keptMessages = useQuery(
+    api.emails.listKeptReceived,
+    folder === "keep" ? {} : "skip",
+  );
   const deletedMessages = useQuery(
     api.emails.listDeletedReceived,
     folder === "deleted" ? { limit: PAGE_SIZE } : "skip",
@@ -130,7 +134,12 @@ function MailScreen() {
   >({ status: "idle" });
 
   const filteredMessages = useMemo(() => {
-    const activeMessages = folder === "deleted" ? deletedMessages : messages;
+    const activeMessages =
+      folder === "deleted"
+        ? deletedMessages
+        : folder === "keep"
+          ? keptMessages
+          : messages;
     if (activeMessages === undefined) {
       return [];
     }
@@ -143,7 +152,7 @@ function MailScreen() {
         return message.archived === true;
       }
       if (folder === "keep") {
-        return message.kept === true;
+        return true;
       }
       return message.archived !== true && message.kept !== true;
     });
@@ -164,7 +173,7 @@ function MailScreen() {
         .toLowerCase()
         .includes(normalizedSearch),
     );
-  }, [deletedMessages, folder, messages, searchTerm]);
+  }, [deletedMessages, folder, keptMessages, messages, searchTerm]);
 
   const selectedMessageId = filteredMessages.some(
     (message) => message._id === selectedId,
@@ -410,16 +419,25 @@ function MailScreen() {
         />
 
         <div className="messages">
-          {(folder === "deleted" ? deletedMessages : messages) ===
-          undefined ? (
+          {(folder === "deleted"
+            ? deletedMessages
+            : folder === "keep"
+              ? keptMessages
+              : messages) === undefined ? (
             <EmptyState title="Loading inbox" detail="Waiting for Convex..." />
           ) : filteredMessages.length === 0 ? (
             <EmptyState
               title={
-                (folder === "deleted" ? deletedMessages : messages)?.length ===
-                0
+                (folder === "deleted"
+                  ? deletedMessages
+                  : folder === "keep"
+                    ? keptMessages
+                    : messages
+                )?.length === 0
                   ? folder === "deleted"
                     ? "No deleted mail"
+                    : folder === "keep"
+                      ? "No saved mail"
                     : "No received mail yet"
                   : "No matches"
               }

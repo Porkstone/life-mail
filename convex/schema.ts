@@ -70,6 +70,11 @@ export default defineSchema({
       "bodyFetchStatus",
       "receivedAt",
     ])
+    .index("by_kept_and_deletedOn_and_receivedAt", [
+      "kept",
+      "deletedOn",
+      "receivedAt",
+    ])
     .index("by_archived_and_deletedOn_and_receivedAt", [
       "archived",
       "deletedOn",

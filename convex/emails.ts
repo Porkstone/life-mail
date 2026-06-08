@@ -85,6 +85,38 @@ export const listReceived = query({
   },
 });
 
+export const listKeptReceived = query({
+  args: {},
+  handler: async (ctx) => {
+    const { user } = await requireUser(ctx);
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    if (addresses.length === 0) {
+      return [];
+    }
+
+    const addressSet = new Set(addresses.map((address) => address.address));
+    const keptMessages = await ctx.db
+      .query("receivedMessages")
+      .withIndex("by_kept_and_deletedOn_and_receivedAt", (q) =>
+        q.eq("kept", true).eq("deletedOn", undefined),
+      )
+      .order("desc")
+      .collect();
+
+    const messages = [];
+    for (const message of keptMessages) {
+      if (await userCanAccessMessage(ctx, addressSet, message._id)) {
+        messages.push(message);
+      }
+    }
+
+    return messages;
+  },
+});
+
 export const listDeletedReceived = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
