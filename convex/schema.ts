@@ -55,6 +55,8 @@ export default defineSchema({
     deletedOn: v.optional(v.number()),
     bodyHtml: v.optional(v.union(v.string(), v.null())),
     bodyText: v.optional(v.union(v.string(), v.null())),
+    bodyHtmlStorageId: v.optional(v.union(v.id("_storage"), v.null())),
+    bodyTextStorageId: v.optional(v.union(v.id("_storage"), v.null())),
     bodyFetchedAt: v.optional(v.number()),
     bodyFetchStatus: v.optional(
       v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),

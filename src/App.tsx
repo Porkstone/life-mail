@@ -2266,7 +2266,15 @@ function ReplyScreen({
 type MessageBodyState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ready"; body: { html: string | null; text: string | null } }
+  | {
+      status: "ready";
+      body: {
+        html: string | null;
+        text: string | null;
+        htmlUrl?: string | null;
+        textUrl?: string | null;
+      };
+    }
   | { status: "error"; message: string };
 
 type MailDraft = {
@@ -2456,8 +2464,30 @@ function MessageBody({ bodyState }: { bodyState: MessageBodyState }) {
     );
   }
 
+  if (bodyState.body.htmlUrl !== undefined && bodyState.body.htmlUrl !== null) {
+    return (
+      <iframe
+        className="message-body-frame"
+        sandbox=""
+        src={bodyState.body.htmlUrl}
+        title="Message body"
+      />
+    );
+  }
+
   if (bodyState.body.text !== null && bodyState.body.text.trim().length > 0) {
     return <pre className="message-body-text">{bodyState.body.text}</pre>;
+  }
+
+  if (bodyState.body.textUrl !== undefined && bodyState.body.textUrl !== null) {
+    return (
+      <iframe
+        className="message-body-frame"
+        sandbox=""
+        src={bodyState.body.textUrl}
+        title="Message body"
+      />
+    );
   }
 
   return (
