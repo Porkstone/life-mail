@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "convex dev --start \"vite --open\"",
     "build": "tsc -b && vite build",
+    "build:app": "tsc -b && vite build",
+    "deploy:convex": "convex deploy --cmd \"pnpm run build:app\" --cmd-url-env-var-name VITE_CONVEX_URL",
     "lint": "tsc && eslint .  --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "vercel-build": "pnpm run deploy:convex"
   },
   "dependencies": {
     "@shoojs/react": "^0.2.2",

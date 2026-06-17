@@ -45,7 +45,7 @@ const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
 const RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE = 10;
-const MAX_INLINE_BODY_BYTES = 900_000;
+const MAX_INLINE_BODY_BYTES = 500_000;
 
 export const listReceived = query({
   args: { limit: v.optional(v.number()) },
@@ -1354,12 +1354,14 @@ async function prepareReceivedBodyForStorage(
   ctx: ActionCtx,
   body: Pick<ReceivedBody, "html" | "text">,
 ): Promise<StoredReceivedBody> {
+  const totalBodySize = encodedSize(body.html ?? "") + encodedSize(body.text ?? "");
+  const shouldStoreBody = totalBodySize > MAX_INLINE_BODY_BYTES;
   const htmlStorageId =
-    body.html !== null && encodedSize(body.html) > MAX_INLINE_BODY_BYTES
+    body.html !== null && shouldStoreBody
       ? await ctx.storage.store(new Blob([body.html], { type: "text/html" }))
       : null;
   const textStorageId =
-    body.text !== null && encodedSize(body.text) > MAX_INLINE_BODY_BYTES
+    body.text !== null && shouldStoreBody
       ? await ctx.storage.store(new Blob([body.text], { type: "text/plain" }))
       : null;
 
