@@ -1,5 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, ClipboardEvent, FormEvent, ReactNode } from "react";
+import type {
+  ChangeEvent,
+  ClipboardEvent,
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import { useAction, useConvexAuth, useMutation, useQuery } from "convex/react";
 import {
   Archive,
@@ -11,6 +17,7 @@ import {
   LogIn,
   LogOut,
   Paperclip,
+  ReceiptText,
   Save,
   Settings,
   Shield,
@@ -28,6 +35,11 @@ const PAGE_SIZE = 50;
 const COMPOSE_DRAFT_KEY = "life-mail:compose-draft";
 type Screen = "inbox" | "reply";
 type Folder = "inbox" | "archive" | "keep" | "deleted";
+type MessageContextMenuState = {
+  messageId: Id<"receivedMessages">;
+  x: number;
+  y: number;
+};
 type SenderAddress = {
   _id: Id<"userEmailAddresses">;
   address: string;
@@ -117,6 +129,8 @@ function MailScreen() {
   const [searchTerm, setSearchTerm] = useState("");
   const [screen, setScreen] = useState<Screen>("inbox");
   const [isComposeOpen, setIsComposeOpen] = useState(false);
+  const [messageContextMenu, setMessageContextMenu] =
+    useState<MessageContextMenuState | null>(null);
   const [blockState, setBlockState] = useState<
     | { status: "idle" }
     | { status: "blocking"; messageId: Id<"receivedMessages"> }
@@ -191,6 +205,34 @@ function MailScreen() {
   const [selectedBody, setSelectedBody] = useState<MessageBodyState>({
     status: "idle",
   });
+
+  useEffect(() => {
+    if (messageContextMenu === null) {
+      return;
+    }
+
+    function closeMenu() {
+      setMessageContextMenu(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    }
+
+    document.addEventListener("pointerdown", closeMenu);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [messageContextMenu]);
 
   useEffect(() => {
     if (selected === undefined || selected === null) {
@@ -278,6 +320,29 @@ function MailScreen() {
           error instanceof Error ? error.message : "Unable to keep this message.",
       });
     }
+  }
+
+  function openMessageContextMenu(
+    event: ReactMouseEvent<HTMLElement>,
+    messageId: Id<"receivedMessages">,
+  ) {
+    event.preventDefault();
+    setSelectedId(messageId);
+    setScreen("inbox");
+
+    const menuWidth = 190;
+    const menuHeight = 48;
+    setMessageContextMenu({
+      messageId,
+      x: Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+      y: Math.min(event.clientY, window.innerHeight - menuHeight - 8),
+    });
+  }
+
+  function handleCreateExpense(messageId: Id<"receivedMessages">) {
+    setSelectedId(messageId);
+    setScreen("inbox");
+    setMessageContextMenu(null);
   }
 
   return (
@@ -476,6 +541,9 @@ function MailScreen() {
                     setScreen("inbox");
                   }
                 }}
+                onContextMenu={(event) =>
+                  openMessageContextMenu(event, message._id)
+                }
                 role="button"
                 tabIndex={0}
               >
@@ -598,6 +666,30 @@ function MailScreen() {
           onClose={() => setIsComposeOpen(false)}
           senderAddresses={getSortedSenderAddresses(viewer?.addresses)}
         />
+      ) : null}
+
+      {messageContextMenu !== null ? (
+        <div
+          aria-label="Message actions"
+          className="message-context-menu"
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={(event) => event.stopPropagation()}
+          role="menu"
+          style={{
+            left: messageContextMenu.x,
+            top: messageContextMenu.y,
+          }}
+        >
+          <button
+            className="message-context-menu-item"
+            onClick={() => handleCreateExpense(messageContextMenu.messageId)}
+            role="menuitem"
+            type="button"
+          >
+            <ReceiptText aria-hidden="true" size={16} strokeWidth={2.2} />
+            Create expense
+          </button>
+        </div>
       ) : null}
     </div>
   );
@@ -1292,8 +1384,13 @@ function SettingsScreen() {
   const [blockedSenderSearch, setBlockedSenderSearch] = useState("");
   const [removingBlockedSenderId, setRemovingBlockedSenderId] =
     useState<Id<"blockedSenders"> | null>(null);
+  const viewer = useQuery(api.auth.viewer, {});
   const blockedSenders = useQuery(api.emails.listBlockedSenders, {});
   const removeBlockedSender = useMutation(api.emails.removeBlockedSender);
+  const userEmailAddress =
+    viewer === undefined
+      ? "Loading..."
+      : (viewer?.user?.email ?? viewer?.identity.email ?? "Not available");
   const visibleBlockedSenders = useMemo(() => {
     if (blockedSenders === undefined) {
       return undefined;
@@ -1341,6 +1438,10 @@ function SettingsScreen() {
       <section className="settings-panel" aria-label="Settings">
         <h2>Settings</h2>
         <dl className="settings-value-list">
+          <div className="settings-value-row">
+            <dt>Email address</dt>
+            <dd>{userEmailAddress}</dd>
+          </div>
           <div className="settings-value-row">
             <dt>VITE_CONVEX_SITE_URL</dt>
             <dd>{convexSiteUrl || "Not configured"}</dd>

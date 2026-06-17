@@ -143,29 +143,48 @@ async function ensureUser(ctx: MutationCtx) {
   }
 
   const existing = await getUserByTokenIdentifier(ctx, identity.tokenIdentifier);
+  const normalizedEmail = tryNormalizeEmail(identity.email);
+  const canLinkByEmail =
+    normalizedEmail !== undefined && isEmailSafeForAccountLinking(identity);
   if (existing !== null) {
-    const normalizedEmail = tryNormalizeEmail(identity.email);
+    if (canLinkByEmail) {
+      const linkedUser = await getUserLinkedToNormalizedEmail(
+        ctx,
+        normalizedEmail,
+      );
+      if (linkedUser !== null && linkedUser._id !== existing._id) {
+        const canonical = await mergeDuplicateUsersInGroup(ctx, [
+          existing,
+          linkedUser,
+        ]);
+        if (canonical === null) {
+          throw new Error("Unable to merge duplicate users");
+        }
+        await ctx.db.patch("users", canonical._id, {
+          tokenIdentifier: identity.tokenIdentifier,
+          email: normalizedEmail,
+          ...(identity.name !== undefined ? { name: identity.name } : {}),
+          lastSeenAt: Date.now(),
+        });
+        await assignSignupEmailIfAvailable(ctx, canonical._id, identity.email);
+        return await ctx.db.get("users", canonical._id);
+      }
+    }
+
     await ctx.db.patch("users", existing._id, {
-      ...(normalizedEmail !== undefined ? { email: normalizedEmail } : {}),
+      ...(canLinkByEmail ? { email: normalizedEmail } : {}),
       ...(identity.name !== undefined ? { name: identity.name } : {}),
       lastSeenAt: Date.now(),
     });
-    await assignSignupEmailIfAvailable(ctx, existing._id, identity.email);
+    if (canLinkByEmail) {
+      await assignSignupEmailIfAvailable(ctx, existing._id, identity.email);
+    }
     return await ctx.db.get("users", existing._id);
   }
 
-  const normalizedEmail = tryNormalizeEmail(identity.email);
-  if (
-    normalizedEmail !== undefined &&
-    isEmailSafeForAccountLinking(identity)
-  ) {
-    let sameEmail = await getUsersByNormalizedEmail(ctx, normalizedEmail);
-    if (sameEmail.length > 1)
-      await mergeDuplicateUsersInGroup(ctx, sameEmail);
-
-    sameEmail = await getUsersByNormalizedEmail(ctx, normalizedEmail);
-    if (sameEmail.length === 1) {
-      const userRow = sameEmail[0];
+  if (canLinkByEmail) {
+    const userRow = await getUserLinkedToNormalizedEmail(ctx, normalizedEmail);
+    if (userRow !== null) {
       await ctx.db.patch("users", userRow._id, {
         tokenIdentifier: identity.tokenIdentifier,
         email: normalizedEmail,
@@ -183,12 +202,14 @@ async function ensureUser(ctx: MutationCtx) {
     admin:
       existingUsers.length === 0 ||
       existingUsers.every((user) => user.tokenIdentifier === undefined),
-    email: normalizedEmail,
+    ...(canLinkByEmail ? { email: normalizedEmail } : {}),
     name: identity.name,
     lastSeenAt: Date.now(),
   });
 
-  await assignSignupEmailIfAvailable(ctx, userId, identity.email);
+  if (canLinkByEmail) {
+    await assignSignupEmailIfAvailable(ctx, userId, identity.email);
+  }
 
   return await ctx.db.get("users", userId);
 }
@@ -222,6 +243,31 @@ async function getUsersByNormalizedEmail(
     .query("users")
     .withIndex("by_email", (q) => q.eq("email", normalizedEmail))
     .collect();
+}
+
+async function getUserLinkedToNormalizedEmail(
+  ctx: MutationCtx,
+  normalizedEmail: string,
+) {
+  let sameEmail = await getUsersByNormalizedEmail(ctx, normalizedEmail);
+  if (sameEmail.length > 1) {
+    await mergeDuplicateUsersInGroup(ctx, sameEmail);
+  }
+
+  sameEmail = await getUsersByNormalizedEmail(ctx, normalizedEmail);
+  if (sameEmail.length === 1) {
+    return sameEmail[0];
+  }
+
+  const address = await ctx.db
+    .query("userEmailAddresses")
+    .withIndex("by_address", (q) => q.eq("address", normalizedEmail))
+    .unique();
+  if (address === null) {
+    return null;
+  }
+
+  return await ctx.db.get("users", address.userId);
 }
 
 function isEmailSafeForAccountLinking(identity: {

@@ -11,11 +11,11 @@
   },
   "dependencies": {
     "@shoojs/react": "^0.2.2",
-    "convex": "^1.36.1",
+    "convex": "^1.41.0",
     "lucide-react": "^1.14.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^7.15.0"
+    "react-router-dom": "^7.17.0"
   },
   "devDependencies": {
     "@convex-dev/eslint-plugin": "^1.2.2",
@@ -33,9 +33,14 @@
     "tailwindcss": "^4.2.2",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.58.2",
-    "vite": "^8.0.9"
+    "vite": "^8.0.16"
   },
   "pnpm": {
+    "overrides": {
+      "@babel/core": "7.29.7",
+      "js-yaml": "4.2.0",
+      "ws": "8.21.0"
+    },
     "onlyBuiltDependencies": [
       "esbuild",
       "@tailwindcss/oxide"
