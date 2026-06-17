@@ -141,6 +141,11 @@ function MailScreen() {
     | { status: "archiving"; messageId: Id<"receivedMessages"> }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [deleteState, setDeleteState] = useState<
+    | { status: "idle" }
+    | { status: "deleting"; messageId: Id<"receivedMessages"> }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
   const [keepState, setKeepState] = useState<
     | { status: "idle" }
     | { status: "keeping"; messageId: Id<"receivedMessages"> }
@@ -201,6 +206,7 @@ function MailScreen() {
   const fetchReceivedBody = useAction(api.emails.getReceivedBody);
   const blockSenderAndArchive = useMutation(api.emails.blockSenderAndArchive);
   const archiveReceived = useMutation(api.emails.archiveReceived);
+  const deleteReceived = useMutation(api.emails.deleteReceived);
   const keepReceived = useMutation(api.emails.keepReceived);
   const [selectedBody, setSelectedBody] = useState<MessageBodyState>({
     status: "idle",
@@ -302,6 +308,22 @@ function MailScreen() {
           error instanceof Error
             ? error.message
             : "Unable to archive this message.",
+      });
+    }
+  }
+
+  async function handleDeleteMessage(messageId: Id<"receivedMessages">) {
+    setDeleteState({ status: "deleting", messageId });
+    try {
+      await deleteReceived({ messageId });
+      setSelectedId(null);
+      setScreen("inbox");
+      setDeleteState({ status: "idle" });
+    } catch (error: unknown) {
+      setDeleteState({
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Unable to delete this message.",
       });
     }
   }
@@ -510,14 +532,14 @@ function MailScreen() {
                 (folder === "deleted" ? deletedMessages : messages)?.length ===
                 0
                   ? folder === "deleted"
-                    ? "Messages deleted by retention cleanup will appear here."
+                    ? "Deleted messages will appear here."
                     : "Ask an administrator to link your avlec.co inbound address."
                     : folder === "archive"
                       ? "Archived messages and blocked senders will appear here."
                       : folder === "keep"
                         ? "Saved messages will appear here."
                         : folder === "deleted"
-                          ? "Messages deleted by retention cleanup will appear here."
+                          ? "Deleted messages will appear here."
                         : "Try another sender, subject, or recipient."
               }
             />
@@ -605,6 +627,23 @@ function MailScreen() {
                     >
                       <Save aria-hidden="true" size={15} strokeWidth={2.3} />
                     </button>
+                    <button
+                      aria-label="Delete message"
+                      className="icon-action message-row-action message-delete-action"
+                      disabled={
+                        folder === "deleted" ||
+                        (deleteState.status === "deleting" &&
+                          deleteState.messageId === message._id)
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDeleteMessage(message._id);
+                      }}
+                      title="Delete message"
+                      type="button"
+                    >
+                      <Trash2 aria-hidden="true" size={15} strokeWidth={2.3} />
+                    </button>
                   </span>
                 </span>
                 <span className="message-subject">{message.subject}</span>
@@ -645,11 +684,13 @@ function MailScreen() {
                 blockError={
                   archiveState.status === "error"
                     ? archiveState.message
-                    : keepState.status === "error"
-                      ? keepState.message
-                      : blockState.status === "error"
-                        ? blockState.message
-                        : null
+                    : deleteState.status === "error"
+                      ? deleteState.message
+                      : keepState.status === "error"
+                        ? keepState.message
+                        : blockState.status === "error"
+                          ? blockState.message
+                          : null
                 }
                 bodyState={selectedBody}
                 message={selected.message}

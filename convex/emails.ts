@@ -271,6 +271,20 @@ export const archiveReceived = mutation({
   },
 });
 
+export const deleteReceived = mutation({
+  args: { messageId: v.id("receivedMessages") },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    await ctx.db.patch("receivedMessages", args.messageId, {
+      archived: false,
+      kept: false,
+      deletedOn: Date.now(),
+    });
+    return null;
+  },
+});
+
 export const keepReceived = mutation({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args) => {
