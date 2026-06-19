@@ -19,6 +19,7 @@ import {
   Paperclip,
   ReceiptText,
   Save,
+  Search,
   Settings,
   Shield,
   Sparkles,
@@ -103,6 +104,7 @@ export default function App() {
   return (
     <Routes>
       <Route element={<MailScreen />} path="/" />
+      <Route element={<ExpensesScreen />} path="/expenses" />
       <Route element={<SettingsScreen />} path="/settings" />
       <Route element={<AdminScreen />} path="/admin" />
     </Routes>
@@ -131,6 +133,8 @@ function MailScreen() {
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [messageContextMenu, setMessageContextMenu] =
     useState<MessageContextMenuState | null>(null);
+  const [expenseMessageId, setExpenseMessageId] =
+    useState<Id<"receivedMessages"> | null>(null);
   const [blockState, setBlockState] = useState<
     | { status: "idle" }
     | { status: "blocking"; messageId: Id<"receivedMessages"> }
@@ -365,6 +369,7 @@ function MailScreen() {
     setSelectedId(messageId);
     setScreen("inbox");
     setMessageContextMenu(null);
+    setExpenseMessageId(messageId);
   }
 
   return (
@@ -422,6 +427,21 @@ function MailScreen() {
           type="button"
         >
           <Trash2 aria-hidden="true" size={20} strokeWidth={2.2} />
+        </button>
+        <button
+          aria-label="Open expenses"
+          className={
+            location.pathname === "/expenses"
+              ? "rail-button active"
+              : "rail-button"
+          }
+          onClick={() => {
+            void navigate("/expenses");
+          }}
+          title="Expenses"
+          type="button"
+        >
+          <ReceiptText aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
         <button
           aria-label="Open settings"
@@ -732,6 +752,19 @@ function MailScreen() {
           </button>
         </div>
       ) : null}
+
+      {expenseMessageId !== null ? (
+        selected === undefined ||
+        selected === null ||
+        selected.message._id !== expenseMessageId ? null : (
+          <ExpenseDialog
+            attachments={selected.attachments}
+            bodyState={selectedBody}
+            message={selected.message}
+            onClose={() => setExpenseMessageId(null)}
+          />
+        )
+      ) : null}
     </div>
   );
 }
@@ -752,6 +785,310 @@ function AuthShell({
         <h1>{title}</h1>
         <p>{detail}</p>
         {action}
+      </section>
+    </main>
+  );
+}
+
+function ExpenseDialog({
+  attachments,
+  bodyState,
+  message,
+  onClose,
+}: {
+  attachments: Array<{
+    _id: Id<"receivedMessageAttachments">;
+    filename: string;
+    contentType: string;
+    contentDisposition: string;
+    contentId: string | null;
+  }>;
+  bodyState: MessageBodyState;
+  message: {
+    _id: Id<"receivedMessages">;
+    subject: string;
+  };
+  onClose: () => void;
+}) {
+  const existingExpenses = useQuery(api.expenses.listForMessage, {
+    messageId: message._id,
+  });
+  const createExpense = useMutation(api.expenses.create);
+  const [expenseType, setExpenseType] = useState("Accomodation");
+  const [stayDates, setStayDates] = useState("");
+  const [venue, setVenue] = useState(message.subject);
+  const [cost, setCost] = useState("");
+  const [invoiceAttachmentId, setInvoiceAttachmentId] = useState<
+    Id<"receivedMessageAttachments"> | ""
+  >(attachments[0]?._id ?? "");
+  const [details, setDetails] = useState(bodyTextFromState(bodyState));
+  const [acknowledgedDuplicate, setAcknowledgedDuplicate] = useState(false);
+  const [saveState, setSaveState] = useState<
+    | { status: "idle" }
+    | { status: "saving" }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+
+  useEffect(() => {
+    setVenue(message.subject);
+    setDetails(bodyTextFromState(bodyState));
+    setInvoiceAttachmentId(attachments[0]?._id ?? "");
+    setAcknowledgedDuplicate(false);
+  }, [attachments, bodyState, message._id, message.subject]);
+
+  const hasExistingExpense =
+    existingExpenses !== undefined && existingExpenses.length > 0;
+  const canSave =
+    saveState.status !== "saving" &&
+    expenseType.trim().length > 0 &&
+    venue.trim().length > 0 &&
+    cost.trim().length > 0 &&
+    (!hasExistingExpense || acknowledgedDuplicate);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSave) {
+      return;
+    }
+
+    setSaveState({ status: "saving" });
+    try {
+      await createExpense({
+        sourceMessageId: message._id,
+        expenseType,
+        stayDates,
+        venue,
+        cost,
+        invoiceAttachmentId:
+          invoiceAttachmentId === "" ? undefined : invoiceAttachmentId,
+        details,
+      });
+      onClose();
+    } catch (error: unknown) {
+      setSaveState({
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to save this expense.",
+      });
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        aria-labelledby="expense-dialog-title"
+        className="expense-dialog"
+        role="dialog"
+      >
+        <header className="expense-dialog-header">
+          <div>
+            <p className="eyebrow">New expense</p>
+            <h2 id="expense-dialog-title">Create expense</h2>
+          </div>
+          <button
+            aria-label="Close"
+            className="icon-action close-compose-action"
+            onClick={onClose}
+            title="Close"
+            type="button"
+          >
+            <X aria-hidden="true" size={16} strokeWidth={2.2} />
+          </button>
+        </header>
+
+        {hasExistingExpense ? (
+          <section className="notice expense-warning">
+            This message already has {existingExpenses.length} expense
+            {existingExpenses.length === 1 ? "" : "s"}. Confirm before creating
+            another.
+          </section>
+        ) : null}
+
+        <form className="expense-form" onSubmit={(event) => void handleSubmit(event)}>
+          <label className="editor-field">
+            <span>Expense type</span>
+            <input
+              onChange={(event) => setExpenseType(event.target.value)}
+              type="text"
+              value={expenseType}
+            />
+          </label>
+          <label className="editor-field">
+            <span>Stay Dates</span>
+            <input
+              onChange={(event) => setStayDates(event.target.value)}
+              placeholder="Add dates"
+              type="text"
+              value={stayDates}
+            />
+          </label>
+          <label className="editor-field">
+            <span>Venue</span>
+            <input
+              onChange={(event) => setVenue(event.target.value)}
+              type="text"
+              value={venue}
+            />
+          </label>
+          <label className="editor-field">
+            <span>Cost</span>
+            <input
+              onChange={(event) => setCost(event.target.value)}
+              placeholder="0.00"
+              type="text"
+              value={cost}
+            />
+          </label>
+          <label className="editor-field">
+            <span>Invoice</span>
+            <select
+              onChange={(event) =>
+                setInvoiceAttachmentId(
+                  event.target.value as Id<"receivedMessageAttachments"> | "",
+                )
+              }
+              value={invoiceAttachmentId}
+            >
+              <option value="">No invoice selected</option>
+              {attachments.map((attachment) => (
+                <option key={attachment._id} value={attachment._id}>
+                  {attachment.filename}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="editor-field expense-details-field">
+            <span>Details</span>
+            <textarea
+              onChange={(event) => setDetails(event.target.value)}
+              value={details}
+            />
+          </label>
+
+          {hasExistingExpense ? (
+            <label className="expense-confirm">
+              <input
+                checked={acknowledgedDuplicate}
+                onChange={(event) =>
+                  setAcknowledgedDuplicate(event.target.checked)
+                }
+                type="checkbox"
+              />
+              Create another expense for this message
+            </label>
+          ) : null}
+
+          <div className="editor-actions">
+            <button className="primary-action" disabled={!canSave} type="submit">
+              {saveState.status === "saving" ? "Saving..." : "Save"}
+            </button>
+            <button className="ghost-action" onClick={onClose} type="button">
+              Cancel
+            </button>
+          </div>
+          {saveState.status === "error" ? (
+            <p className="send-status error">{saveState.message}</p>
+          ) : null}
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function ExpensesScreen() {
+  const navigate = useNavigate();
+  const expenses = useQuery(api.expenses.list, { limit: 300 });
+  const [searchTerm, setSearchTerm] = useState("");
+  const filteredExpenses = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    if (expenses === undefined) {
+      return [];
+    }
+    if (normalizedSearch.length === 0) {
+      return expenses;
+    }
+
+    return expenses.filter(({ expense, invoice, message }) =>
+      [
+        expense.expenseType,
+        expense.stayDates,
+        expense.venue,
+        expense.cost,
+        expense.details,
+        invoice?.filename ?? "",
+        message?.subject ?? "",
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearch),
+    );
+  }, [expenses, searchTerm]);
+
+  return (
+    <main className="expenses-screen">
+      <header className="settings-header expenses-header">
+        <button
+          className="ghost-action"
+          onClick={() => void navigate("/")}
+          type="button"
+        >
+          Back to mail
+        </button>
+        <div>
+          <p className="eyebrow">Expenses</p>
+          <h1>Expenses</h1>
+        </div>
+      </header>
+
+      <section className="settings-panel expenses-panel">
+        <label className="search-field">
+          <Search aria-hidden="true" size={16} strokeWidth={2.2} />
+          <input
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Search expenses"
+            type="search"
+            value={searchTerm}
+          />
+        </label>
+
+        {expenses === undefined ? (
+          <EmptyState title="Loading expenses" detail="Waiting for Convex..." />
+        ) : filteredExpenses.length === 0 ? (
+          <EmptyState
+            title={expenses.length === 0 ? "No expenses yet" : "No matches"}
+            detail={
+              expenses.length === 0
+                ? "Create expenses from a message context menu."
+                : "Try another venue, cost, invoice, or detail."
+            }
+          />
+        ) : (
+          <div className="expense-list">
+            {filteredExpenses.map(({ expense, invoice, message }) => (
+              <article className="expense-row" key={expense._id}>
+                <div>
+                  <p className="expense-title">{expense.venue}</p>
+                  <p className="expense-meta">
+                    {expense.expenseType}
+                    {expense.stayDates.trim().length > 0
+                      ? ` - ${expense.stayDates}`
+                      : ""}
+                  </p>
+                  <p className="expense-source">
+                    {message?.subject ?? "Original message unavailable"}
+                  </p>
+                </div>
+                <div className="expense-row-side">
+                  <strong>{expense.cost}</strong>
+                  <span>{invoice?.filename ?? "No invoice"}</span>
+                  <time>{formatDate(expense.createdAt)}</time>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   );
@@ -2593,6 +2930,25 @@ function formatDate(value: number) {
 
 function replySubject(subject: string) {
   return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
+}
+
+function bodyTextFromState(bodyState: MessageBodyState) {
+  if (bodyState.status !== "ready") {
+    return "";
+  }
+  if (bodyState.body.text !== null && bodyState.body.text.trim().length > 0) {
+    return bodyState.body.text;
+  }
+  if (bodyState.body.html !== null && bodyState.body.html.trim().length > 0) {
+    return htmlToPlainText(bodyState.body.html);
+  }
+
+  return "";
+}
+
+function htmlToPlainText(html: string) {
+  const document = new DOMParser().parseFromString(html, "text/html");
+  return document.body.textContent?.replace(/\s+/g, " ").trim() ?? "";
 }
 
 function parseRecipients(value: string) {

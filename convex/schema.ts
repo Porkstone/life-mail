@@ -24,9 +24,11 @@ export default defineSchema({
     messageId: v.id("receivedMessages"),
     address: v.string(),
     receivedAt: v.number(),
+    deletedOn: v.optional(v.number()),
   })
     .index("by_messageId", ["messageId"])
-    .index("by_address_and_receivedAt", ["address", "receivedAt"]),
+    .index("by_address_and_receivedAt", ["address", "receivedAt"])
+    .index("by_address_and_deletedOn", ["address", "deletedOn"]),
 
   receivedMessageSenderIndex: defineTable({
     messageId: v.id("receivedMessages"),
@@ -81,7 +83,8 @@ export default defineSchema({
       "archived",
       "deletedOn",
       "receivedAt",
-    ]),
+    ])
+    .index("by_deletedOn_and_receivedAt", ["deletedOn", "receivedAt"]),
 
   receivedMessageAttachments: defineTable({
     messageId: v.id("receivedMessages"),
@@ -91,6 +94,21 @@ export default defineSchema({
     contentDisposition: v.string(),
     contentId: v.union(v.string(), v.null()),
   }).index("by_message_id", ["messageId"]),
+
+  expenses: defineTable({
+    userId: v.id("users"),
+    sourceMessageId: v.id("receivedMessages"),
+    expenseType: v.string(),
+    stayDates: v.string(),
+    venue: v.string(),
+    cost: v.string(),
+    invoiceAttachmentId: v.optional(v.id("receivedMessageAttachments")),
+    details: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_userId_and_createdAt", ["userId", "createdAt"])
+    .index("by_sourceMessageId", ["sourceMessageId"]),
 
   sentMessages: defineTable({
     resendEmailId: v.string(),

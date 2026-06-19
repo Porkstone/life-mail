@@ -135,11 +135,28 @@ export const listDeletedReceived = query({
     for (const { address } of addresses) {
       const recipients = await ctx.db
         .query("receivedMessageRecipients")
-        .withIndex("by_address_and_receivedAt", (q) => q.eq("address", address))
+        .withIndex("by_address_and_deletedOn", (q) =>
+          q.eq("address", address).gt("deletedOn", 0),
+        )
         .order("desc")
         .take(limit);
       for (const recipient of recipients) {
-        messageIds.set(recipient.messageId, recipient.receivedAt);
+        messageIds.set(recipient.messageId, recipient.deletedOn ?? 0);
+      }
+    }
+
+    const addressSet = new Set(addresses.map((address) => address.address));
+    const deletedMessages = await ctx.db
+      .query("receivedMessages")
+      .withIndex("by_deletedOn_and_receivedAt", (q) => q.gt("deletedOn", 0))
+      .order("desc")
+      .take(limit);
+    for (const message of deletedMessages) {
+      if (
+        !messageIds.has(message._id) &&
+        (await userCanAccessMessage(ctx, addressSet, message._id))
+      ) {
+        messageIds.set(message._id, message.deletedOn ?? 0);
       }
     }
 
@@ -276,11 +293,13 @@ export const deleteReceived = mutation({
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     await requireMessageAccess(ctx, user._id, args.messageId);
+    const deletedOn = Date.now();
     await ctx.db.patch("receivedMessages", args.messageId, {
       archived: false,
       kept: false,
-      deletedOn: Date.now(),
+      deletedOn,
     });
+    await markReceivedMessageRecipientsDeleted(ctx, args.messageId, deletedOn);
     return null;
   },
 });
@@ -770,6 +789,7 @@ export const deleteOldArchivedReceivedMessages = internalMutation({
         bodyFetchedAt: undefined,
         attachmentCount: 0,
       });
+      await markReceivedMessageRecipientsDeleted(ctx, message._id, deletedOn);
     }
 
     if (messages.length === OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE) {
@@ -1494,6 +1514,23 @@ async function requireMessageAccess(
   }
 
   throw new Error("Unauthorized");
+}
+
+async function markReceivedMessageRecipientsDeleted(
+  ctx: MutationCtx,
+  messageId: Id<"receivedMessages">,
+  deletedOn: number,
+) {
+  const recipients = await ctx.db
+    .query("receivedMessageRecipients")
+    .withIndex("by_messageId", (q) => q.eq("messageId", messageId))
+    .take(100);
+
+  for (const recipient of recipients) {
+    await ctx.db.patch("receivedMessageRecipients", recipient._id, {
+      deletedOn,
+    });
+  }
 }
 
 async function userCanAccessMessage(
