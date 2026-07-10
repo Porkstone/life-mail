@@ -44,6 +44,7 @@ const SETTINGS_KEY = "global";
 const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
+const DELETED_MESSAGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE = 10;
 const MAX_INLINE_BODY_BYTES = 500_000;
 
@@ -130,27 +131,37 @@ export const listDeletedReceived = query({
       return [];
     }
 
-    const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
+    const limit =
+      args.limit === undefined ? null : Math.min(Math.max(args.limit, 1), 500);
+    const deletedOnCutoff = Date.now() - DELETED_MESSAGE_RETENTION_MS;
     const messageIds = new Map<Id<"receivedMessages">, number>();
     for (const { address } of addresses) {
-      const recipients = await ctx.db
+      const recipientsQuery = ctx.db
         .query("receivedMessageRecipients")
         .withIndex("by_address_and_deletedOn", (q) =>
-          q.eq("address", address).gt("deletedOn", 0),
+          q.eq("address", address).gt("deletedOn", deletedOnCutoff),
         )
-        .order("desc")
-        .take(limit);
+        .order("desc");
+      const recipients =
+        limit === null
+          ? await recipientsQuery.collect()
+          : await recipientsQuery.take(limit);
       for (const recipient of recipients) {
         messageIds.set(recipient.messageId, recipient.deletedOn ?? 0);
       }
     }
 
     const addressSet = new Set(addresses.map((address) => address.address));
-    const deletedMessages = await ctx.db
+    const deletedMessagesQuery = ctx.db
       .query("receivedMessages")
-      .withIndex("by_deletedOn_and_receivedAt", (q) => q.gt("deletedOn", 0))
-      .order("desc")
-      .take(limit);
+      .withIndex("by_deletedOn_and_receivedAt", (q) =>
+        q.gt("deletedOn", deletedOnCutoff),
+      )
+      .order("desc");
+    const deletedMessages =
+      limit === null
+        ? await deletedMessagesQuery.collect()
+        : await deletedMessagesQuery.take(limit);
     for (const message of deletedMessages) {
       if (
         !messageIds.has(message._id) &&
@@ -163,14 +174,19 @@ export const listDeletedReceived = query({
     const messages = [];
     for (const messageId of messageIds.keys()) {
       const message = await ctx.db.get("receivedMessages", messageId);
-      if (message !== null && message.deletedOn !== undefined) {
+      if (
+        message !== null &&
+        message.deletedOn !== undefined &&
+        message.deletedOn > deletedOnCutoff
+      ) {
         messages.push(message);
       }
     }
 
-    return messages
-      .sort((left, right) => (right.deletedOn ?? 0) - (left.deletedOn ?? 0))
-      .slice(0, limit);
+    const sortedMessages = messages.sort(
+      (left, right) => (right.deletedOn ?? 0) - (left.deletedOn ?? 0),
+    );
+    return limit === null ? sortedMessages : sortedMessages.slice(0, limit);
   },
 });
 

@@ -122,7 +122,7 @@ function MailScreen() {
   );
   const deletedMessages = useQuery(
     api.emails.listDeletedReceived,
-    folder === "deleted" ? { limit: PAGE_SIZE } : "skip",
+    folder === "deleted" ? {} : "skip",
   );
   const viewer = useQuery(api.auth.viewer, {});
   const [selectedId, setSelectedId] = useState<Id<"receivedMessages"> | null>(
