@@ -258,7 +258,7 @@ export const getLastPreviousReceivedFromSender = query({
   },
 });
 
-export const blockSenderAndArchive = mutation({
+export const blockSenderAndDelete = mutation({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
@@ -283,13 +283,18 @@ export const blockSenderAndArchive = mutation({
       }
     }
 
+    const deletedOn = Date.now();
     await ctx.db.patch("receivedMessages", args.messageId, {
-      archived: true,
+      archived: false,
       kept: false,
+      deletedOn,
     });
+    await markReceivedMessageRecipientsDeleted(ctx, args.messageId, deletedOn);
     return { address };
   },
 });
+
+export const blockSenderAndArchive = blockSenderAndDelete;
 
 export const archiveReceived = mutation({
   args: { messageId: v.id("receivedMessages") },
@@ -980,6 +985,8 @@ export const storeResendReceivedEmail = internalMutation({
             .withIndex("by_address", (q) => q.eq("address", senderAddress))
             .unique();
 
+    const receivedAt = Date.parse(args.data.created_at) || Date.now();
+    const deletedOn = blockedSender === null ? undefined : Date.now();
     const messageId = await ctx.db.insert("receivedMessages", {
       resendEmailId: args.data.email_id,
       resendMessageId: args.data.message_id,
@@ -993,8 +1000,9 @@ export const storeResendReceivedEmail = internalMutation({
       bcc: args.data.bcc,
       subject: args.data.subject,
       attachmentCount: args.data.attachments.length,
-      receivedAt: Date.parse(args.data.created_at) || Date.now(),
-      archived: blockedSender !== null,
+      receivedAt,
+      archived: false,
+      ...(deletedOn === undefined ? {} : { deletedOn }),
       bodyFetchStatus: "pending",
       rawEvent: args.rawEvent,
     });
@@ -1003,7 +1011,7 @@ export const storeResendReceivedEmail = internalMutation({
       await ctx.db.insert("receivedMessageSenderIndex", {
         messageId,
         fromAddress: senderAddress,
-        receivedAt: Date.parse(args.data.created_at) || Date.now(),
+        receivedAt,
       });
     }
 
@@ -1027,7 +1035,8 @@ export const storeResendReceivedEmail = internalMutation({
       await ctx.db.insert("receivedMessageRecipients", {
         messageId,
         address,
-        receivedAt: Date.parse(args.data.created_at) || Date.now(),
+        receivedAt,
+        ...(deletedOn === undefined ? {} : { deletedOn }),
       });
     }
 

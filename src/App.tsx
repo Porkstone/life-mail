@@ -208,7 +208,7 @@ function MailScreen() {
     selectedMessageId === null ? "skip" : { messageId: selectedMessageId },
   );
   const fetchReceivedBody = useAction(api.emails.getReceivedBody);
-  const blockSenderAndArchive = useMutation(api.emails.blockSenderAndArchive);
+  const blockSenderAndDelete = useMutation(api.emails.blockSenderAndDelete);
   const archiveReceived = useMutation(api.emails.archiveReceived);
   const deleteReceived = useMutation(api.emails.deleteReceived);
   const keepReceived = useMutation(api.emails.keepReceived);
@@ -283,7 +283,7 @@ function MailScreen() {
   async function handleBlockSender(messageId: Id<"receivedMessages">) {
     setBlockState({ status: "blocking", messageId });
     try {
-      await blockSenderAndArchive({ messageId });
+      await blockSenderAndDelete({ messageId });
       setSelectedId(null);
       setScreen("inbox");
       setBlockState({ status: "idle" });
@@ -613,7 +613,7 @@ function MailScreen() {
                       <Archive aria-hidden="true" size={15} strokeWidth={2.3} />
                     </button>
                     <button
-                      aria-label="Block sender and archive message"
+                      aria-label="Block sender and delete message"
                       className="icon-action block-action message-row-action message-block-action"
                       disabled={
                         folder === "deleted" ||
@@ -624,7 +624,7 @@ function MailScreen() {
                         event.stopPropagation();
                         void handleBlockSender(message._id);
                       }}
-                      title="Block sender and archive"
+                      title="Block sender and delete"
                       type="button"
                     >
                       <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
