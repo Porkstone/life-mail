@@ -490,6 +490,160 @@ h1 {
   outline: none;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(32, 33, 36, 0.36);
+}
+
+.expense-dialog {
+  display: grid;
+  width: min(100%, 720px);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid #d1d1d1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.22);
+}
+
+.expense-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e1dfdd;
+}
+
+.expense-dialog-header h2 {
+  font-size: 24px;
+  font-weight: 650;
+}
+
+.expense-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.expense-details-field,
+.expense-form .editor-actions,
+.expense-form .send-status,
+.expense-confirm {
+  grid-column: 1 / -1;
+}
+
+.expense-details-field textarea {
+  min-height: 150px;
+}
+
+.expense-warning {
+  margin: 0;
+}
+
+.expense-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #424242;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.expenses-screen {
+  min-height: 100vh;
+  padding: 34px clamp(24px, 5vw, 64px);
+  background: #faf9f8;
+}
+
+.expenses-header {
+  max-width: 1120px;
+}
+
+.expenses-panel {
+  max-width: 1120px;
+}
+
+.search-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  margin-bottom: 16px;
+  padding: 0 10px;
+  border: 1px solid #d1d1d1;
+  border-radius: 4px;
+  color: #616161;
+  background: #ffffff;
+}
+
+.search-field:focus-within {
+  border-color: #0f6cbd;
+  box-shadow: 0 0 0 1px #0f6cbd;
+}
+
+.search-field input {
+  width: 100%;
+  border: 0;
+  color: #242424;
+  font: inherit;
+  outline: 0;
+}
+
+.expense-list {
+  display: grid;
+  gap: 10px;
+}
+
+.expense-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+  padding: 14px;
+  border: 1px solid #e1dfdd;
+  border-radius: 6px;
+  background: #fbfbfb;
+}
+
+.expense-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.expense-meta,
+.expense-source,
+.expense-row-side span,
+.expense-row-side time {
+  color: #616161;
+  font-size: 13px;
+}
+
+.expense-source {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.expense-row-side {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  text-align: right;
+}
+
+.expense-row-side strong {
+  color: #107c41;
+  font-size: 16px;
+}
+
 .sender-block {
   display: flex;
   align-items: center;
