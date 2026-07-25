@@ -44,7 +44,9 @@ const SETTINGS_KEY = "global";
 const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 const OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE = 50;
+const DELETED_MESSAGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE = 10;
+const MAX_INLINE_BODY_BYTES = 500_000;
 
 export const listReceived = query({
   args: { limit: v.optional(v.number()) },
@@ -129,30 +131,62 @@ export const listDeletedReceived = query({
       return [];
     }
 
-    const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
+    const limit =
+      args.limit === undefined ? null : Math.min(Math.max(args.limit, 1), 500);
+    const deletedOnCutoff = Date.now() - DELETED_MESSAGE_RETENTION_MS;
     const messageIds = new Map<Id<"receivedMessages">, number>();
     for (const { address } of addresses) {
-      const recipients = await ctx.db
+      const recipientsQuery = ctx.db
         .query("receivedMessageRecipients")
-        .withIndex("by_address_and_receivedAt", (q) => q.eq("address", address))
-        .order("desc")
-        .take(limit);
+        .withIndex("by_address_and_deletedOn", (q) =>
+          q.eq("address", address).gt("deletedOn", deletedOnCutoff),
+        )
+        .order("desc");
+      const recipients =
+        limit === null
+          ? await recipientsQuery.collect()
+          : await recipientsQuery.take(limit);
       for (const recipient of recipients) {
-        messageIds.set(recipient.messageId, recipient.receivedAt);
+        messageIds.set(recipient.messageId, recipient.deletedOn ?? 0);
+      }
+    }
+
+    const addressSet = new Set(addresses.map((address) => address.address));
+    const deletedMessagesQuery = ctx.db
+      .query("receivedMessages")
+      .withIndex("by_deletedOn_and_receivedAt", (q) =>
+        q.gt("deletedOn", deletedOnCutoff),
+      )
+      .order("desc");
+    const deletedMessages =
+      limit === null
+        ? await deletedMessagesQuery.collect()
+        : await deletedMessagesQuery.take(limit);
+    for (const message of deletedMessages) {
+      if (
+        !messageIds.has(message._id) &&
+        (await userCanAccessMessage(ctx, addressSet, message._id))
+      ) {
+        messageIds.set(message._id, message.deletedOn ?? 0);
       }
     }
 
     const messages = [];
     for (const messageId of messageIds.keys()) {
       const message = await ctx.db.get("receivedMessages", messageId);
-      if (message !== null && message.deletedOn !== undefined) {
+      if (
+        message !== null &&
+        message.deletedOn !== undefined &&
+        message.deletedOn > deletedOnCutoff
+      ) {
         messages.push(message);
       }
     }
 
-    return messages
-      .sort((left, right) => (right.deletedOn ?? 0) - (left.deletedOn ?? 0))
-      .slice(0, limit);
+    const sortedMessages = messages.sort(
+      (left, right) => (right.deletedOn ?? 0) - (left.deletedOn ?? 0),
+    );
+    return limit === null ? sortedMessages : sortedMessages.slice(0, limit);
   },
 });
 
@@ -224,7 +258,7 @@ export const getLastPreviousReceivedFromSender = query({
   },
 });
 
-export const blockSenderAndArchive = mutation({
+export const blockSenderAndDelete = mutation({
   args: { messageId: v.id("receivedMessages") },
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
@@ -249,13 +283,18 @@ export const blockSenderAndArchive = mutation({
       }
     }
 
+    const deletedOn = Date.now();
     await ctx.db.patch("receivedMessages", args.messageId, {
-      archived: true,
+      archived: false,
       kept: false,
+      deletedOn,
     });
+    await markReceivedMessageRecipientsDeleted(ctx, args.messageId, deletedOn);
     return { address };
   },
 });
+
+export const blockSenderAndArchive = blockSenderAndDelete;
 
 export const archiveReceived = mutation({
   args: { messageId: v.id("receivedMessages") },
@@ -266,6 +305,22 @@ export const archiveReceived = mutation({
       archived: true,
       kept: false,
     });
+    return null;
+  },
+});
+
+export const deleteReceived = mutation({
+  args: { messageId: v.id("receivedMessages") },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    await requireMessageAccess(ctx, user._id, args.messageId);
+    const deletedOn = Date.now();
+    await ctx.db.patch("receivedMessages", args.messageId, {
+      archived: false,
+      kept: false,
+      deletedOn,
+    });
+    await markReceivedMessageRecipientsDeleted(ctx, args.messageId, deletedOn);
     return null;
   },
 });
@@ -468,19 +523,17 @@ export const getReceivedBody = action({
     }
 
     if (target.deletedOn !== undefined || target.bodyFetchedAt !== undefined) {
-      return {
-        html: target.bodyHtml ?? null,
-        text: target.bodyText ?? null,
-      };
+      return await buildReceivedBodyResponse(ctx, target);
     }
 
     try {
       const body = await fetchReceivedBodyFromResend(target.resendEmailId);
+      const storedBody = await prepareReceivedBodyForStorage(ctx, body);
       await ctx.runMutation(internal.emails.storeReceivedBody, {
         messageId: args.messageId,
-        ...body,
+        ...storedBody,
       });
-      return body;
+      return await buildStoredReceivedBodyResponse(ctx, storedBody);
     } catch (error: unknown) {
       await ctx.runMutation(internal.emails.storeReceivedBodyFetchError, {
         messageId: args.messageId,
@@ -589,9 +642,10 @@ export const fetchPendingReceivedBodies = internalAction({
     for (const target of targets) {
       try {
         const body = await fetchReceivedBodyFromResend(target.resendEmailId);
+        const storedBody = await prepareReceivedBodyForStorage(ctx, body);
         await ctx.runMutation(internal.emails.storeReceivedBody, {
           messageId: target._id,
-          ...body,
+          ...storedBody,
         });
         fetched += 1;
       } catch (error: unknown) {
@@ -662,6 +716,8 @@ export const getReceivedBodyFetchTarget = internalQuery({
       resendEmailId: message.resendEmailId,
       bodyHtml: message.bodyHtml,
       bodyText: message.bodyText,
+      bodyHtmlStorageId: message.bodyHtmlStorageId,
+      bodyTextStorageId: message.bodyTextStorageId,
       bodyFetchedAt: message.bodyFetchedAt,
       deletedOn: message.deletedOn,
     };
@@ -695,6 +751,8 @@ export const getReceivedBodyFetchTargetForUser = internalQuery({
       resendEmailId: message.resendEmailId,
       bodyHtml: message.bodyHtml,
       bodyText: message.bodyText,
+      bodyHtmlStorageId: message.bodyHtmlStorageId,
+      bodyTextStorageId: message.bodyTextStorageId,
       bodyFetchedAt: message.bodyFetchedAt,
       deletedOn: message.deletedOn,
     };
@@ -745,11 +803,14 @@ export const deleteOldArchivedReceivedMessages = internalMutation({
         deletedOn,
         bodyText: null,
         bodyHtml: null,
+        bodyTextStorageId: null,
+        bodyHtmlStorageId: null,
         bodyFetchStatus: undefined,
         bodyFetchError: undefined,
         bodyFetchedAt: undefined,
         attachmentCount: 0,
       });
+      await markReceivedMessageRecipientsDeleted(ctx, message._id, deletedOn);
     }
 
     if (messages.length === OLD_ARCHIVED_MESSAGE_DELETE_BATCH_SIZE) {
@@ -769,11 +830,15 @@ export const storeReceivedBody = internalMutation({
     messageId: v.id("receivedMessages"),
     html: v.union(v.string(), v.null()),
     text: v.union(v.string(), v.null()),
+    htmlStorageId: v.union(v.id("_storage"), v.null()),
+    textStorageId: v.union(v.id("_storage"), v.null()),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch("receivedMessages", args.messageId, {
       bodyHtml: args.html,
       bodyText: args.text,
+      bodyHtmlStorageId: args.htmlStorageId,
+      bodyTextStorageId: args.textStorageId,
       bodyFetchedAt: Date.now(),
       bodyFetchStatus: "ready",
       bodyFetchError: undefined,
@@ -920,6 +985,8 @@ export const storeResendReceivedEmail = internalMutation({
             .withIndex("by_address", (q) => q.eq("address", senderAddress))
             .unique();
 
+    const receivedAt = Date.parse(args.data.created_at) || Date.now();
+    const deletedOn = blockedSender === null ? undefined : Date.now();
     const messageId = await ctx.db.insert("receivedMessages", {
       resendEmailId: args.data.email_id,
       resendMessageId: args.data.message_id,
@@ -933,8 +1000,9 @@ export const storeResendReceivedEmail = internalMutation({
       bcc: args.data.bcc,
       subject: args.data.subject,
       attachmentCount: args.data.attachments.length,
-      receivedAt: Date.parse(args.data.created_at) || Date.now(),
-      archived: blockedSender !== null,
+      receivedAt,
+      archived: false,
+      ...(deletedOn === undefined ? {} : { deletedOn }),
       bodyFetchStatus: "pending",
       rawEvent: args.rawEvent,
     });
@@ -943,7 +1011,7 @@ export const storeResendReceivedEmail = internalMutation({
       await ctx.db.insert("receivedMessageSenderIndex", {
         messageId,
         fromAddress: senderAddress,
-        receivedAt: Date.parse(args.data.created_at) || Date.now(),
+        receivedAt,
       });
     }
 
@@ -967,7 +1035,8 @@ export const storeResendReceivedEmail = internalMutation({
       await ctx.db.insert("receivedMessageRecipients", {
         messageId,
         address,
-        receivedAt: Date.parse(args.data.created_at) || Date.now(),
+        receivedAt,
+        ...(deletedOn === undefined ? {} : { deletedOn }),
       });
     }
 
@@ -1198,6 +1267,8 @@ type BodyFetchTarget = {
   resendEmailId: string;
   bodyHtml?: string | null;
   bodyText?: string | null;
+  bodyHtmlStorageId?: Id<"_storage"> | null;
+  bodyTextStorageId?: Id<"_storage"> | null;
   bodyFetchedAt?: number;
   deletedOn?: number;
 };
@@ -1205,6 +1276,15 @@ type BodyFetchTarget = {
 type ReceivedBody = {
   html: string | null;
   text: string | null;
+  htmlUrl?: string | null;
+  textUrl?: string | null;
+};
+
+type StoredReceivedBody = {
+  html: string | null;
+  text: string | null;
+  htmlStorageId: Id<"_storage"> | null;
+  textStorageId: Id<"_storage"> | null;
 };
 
 type AttachmentFetchTarget = {
@@ -1302,16 +1382,105 @@ async function getReceivedBodyTextForPrompt(
   }
 
   if (target.bodyFetchedAt !== undefined) {
-    return target.bodyText ?? htmlToText(target.bodyHtml ?? "");
+    return await getStoredReceivedBodyText(ctx, target);
   }
 
   const body = await fetchReceivedBodyFromResend(target.resendEmailId);
+  const storedBody = await prepareReceivedBodyForStorage(ctx, body);
   await ctx.runMutation(internal.emails.storeReceivedBody, {
     messageId,
-    ...body,
+    ...storedBody,
   });
 
   return body.text ?? htmlToText(body.html ?? "");
+}
+
+async function prepareReceivedBodyForStorage(
+  ctx: ActionCtx,
+  body: Pick<ReceivedBody, "html" | "text">,
+): Promise<StoredReceivedBody> {
+  const totalBodySize = encodedSize(body.html ?? "") + encodedSize(body.text ?? "");
+  const shouldStoreBody = totalBodySize > MAX_INLINE_BODY_BYTES;
+  const htmlStorageId =
+    body.html !== null && shouldStoreBody
+      ? await ctx.storage.store(new Blob([body.html], { type: "text/html" }))
+      : null;
+  const textStorageId =
+    body.text !== null && shouldStoreBody
+      ? await ctx.storage.store(new Blob([body.text], { type: "text/plain" }))
+      : null;
+
+  return {
+    html: htmlStorageId === null ? body.html : null,
+    text: textStorageId === null ? body.text : null,
+    htmlStorageId,
+    textStorageId,
+  };
+}
+
+async function buildStoredReceivedBodyResponse(
+  ctx: ActionCtx,
+  body: StoredReceivedBody,
+): Promise<ReceivedBody> {
+  return {
+    html: body.html,
+    text: body.text,
+    htmlUrl:
+      body.htmlStorageId === null
+        ? null
+        : await ctx.storage.getUrl(body.htmlStorageId),
+    textUrl:
+      body.textStorageId === null
+        ? null
+        : await ctx.storage.getUrl(body.textStorageId),
+  };
+}
+
+async function buildReceivedBodyResponse(
+  ctx: ActionCtx,
+  body: Pick<
+    BodyFetchTarget,
+    "bodyHtml" | "bodyText" | "bodyHtmlStorageId" | "bodyTextStorageId"
+  >,
+): Promise<ReceivedBody> {
+  return {
+    html: body.bodyHtml ?? null,
+    text: body.bodyText ?? null,
+    htmlUrl:
+      body.bodyHtmlStorageId === undefined || body.bodyHtmlStorageId === null
+        ? null
+        : await ctx.storage.getUrl(body.bodyHtmlStorageId),
+    textUrl:
+      body.bodyTextStorageId === undefined || body.bodyTextStorageId === null
+        ? null
+        : await ctx.storage.getUrl(body.bodyTextStorageId),
+  };
+}
+
+async function getStoredReceivedBodyText(
+  ctx: ActionCtx,
+  target: BodyFetchTarget,
+) {
+  if (target.bodyText !== undefined && target.bodyText !== null) {
+    return target.bodyText;
+  }
+  if (target.bodyTextStorageId !== undefined && target.bodyTextStorageId !== null) {
+    const textBlob = await ctx.storage.get(target.bodyTextStorageId);
+    return textBlob === null ? "" : await textBlob.text();
+  }
+  if (target.bodyHtml !== undefined && target.bodyHtml !== null) {
+    return htmlToText(target.bodyHtml);
+  }
+  if (target.bodyHtmlStorageId !== undefined && target.bodyHtmlStorageId !== null) {
+    const htmlBlob = await ctx.storage.get(target.bodyHtmlStorageId);
+    return htmlBlob === null ? "" : htmlToText(await htmlBlob.text());
+  }
+
+  return "";
+}
+
+function encodedSize(value: string) {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function buildOpenRouterUserPrompt(prompt: string, originalBody: string) {
@@ -1370,6 +1539,23 @@ async function requireMessageAccess(
   }
 
   throw new Error("Unauthorized");
+}
+
+async function markReceivedMessageRecipientsDeleted(
+  ctx: MutationCtx,
+  messageId: Id<"receivedMessages">,
+  deletedOn: number,
+) {
+  const recipients = await ctx.db
+    .query("receivedMessageRecipients")
+    .withIndex("by_messageId", (q) => q.eq("messageId", messageId))
+    .take(100);
+
+  for (const recipient of recipients) {
+    await ctx.db.patch("receivedMessageRecipients", recipient._id, {
+      deletedOn,
+    });
+  }
 }
 
 async function userCanAccessMessage(
