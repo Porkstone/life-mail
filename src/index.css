@@ -1574,6 +1574,34 @@ dd {
     margin-left: auto;
   }
 
+  .message-row {
+    min-height: 96px;
+    padding: 14px 12px 14px 16px;
+  }
+
+  .message-row-top {
+    gap: 6px;
+  }
+
+  .message-row-actions {
+    gap: 4px;
+  }
+
+  .message-row-action,
+  .message-block-action {
+    position: static;
+    width: 30px;
+    min-height: 30px;
+    opacity: 1;
+    border-color: #dedede;
+    background: rgba(255, 255, 255, 0.9);
+  }
+
+  .message-row-action:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   .message-list,
   .preview-pane {
     grid-column: 1;
