@@ -71,10 +71,7 @@ export default function App() {
   if (!convexAuth.isAuthenticated) {
     if (!needsManualSignIn()) {
       return (
-        <AuthShell
-          title="Life Mail"
-          detail="Refreshing your session..."
-        />
+        <AuthShell title="Life Mail" detail="Refreshing your session..." />
       );
     }
 
@@ -157,18 +154,43 @@ function MailScreen() {
     | { status: "error"; message: string }
   >({ status: "idle" });
 
+  const mergedKeptMessages = useMemo(() => {
+    const byId = new Map<
+      Id<"receivedMessages">,
+      NonNullable<typeof messages>[number]
+    >();
+
+    for (const message of messages ?? []) {
+      if (message.kept === true) {
+        byId.set(message._id, message);
+      }
+    }
+    for (const message of keptMessages ?? []) {
+      byId.set(message._id, message);
+    }
+
+    return [...byId.values()].sort(
+      (left, right) => right.receivedAt - left.receivedAt,
+    );
+  }, [keptMessages, messages]);
+
+  const folderMessages =
+    folder === "deleted"
+      ? deletedMessages
+      : folder === "keep"
+        ? mergedKeptMessages
+        : messages;
+  const isFolderLoading =
+    folder === "keep"
+      ? keptMessages === undefined && mergedKeptMessages.length === 0
+      : folderMessages === undefined;
+
   const filteredMessages = useMemo(() => {
-    const activeMessages =
-      folder === "deleted"
-        ? deletedMessages
-        : folder === "keep"
-          ? keptMessages
-          : messages;
-    if (activeMessages === undefined) {
+    if (folderMessages === undefined) {
       return [];
     }
 
-    const visibleMessages = activeMessages.filter((message) => {
+    const visibleMessages = folderMessages.filter((message) => {
       if (folder === "deleted") {
         return true;
       }
@@ -197,7 +219,7 @@ function MailScreen() {
         .toLowerCase()
         .includes(normalizedSearch),
     );
-  }, [deletedMessages, folder, keptMessages, messages, searchTerm]);
+  }, [folder, folderMessages, searchTerm]);
 
   const selectedMessageId = filteredMessages.some(
     (message) => message._id === selectedId,
@@ -336,7 +358,9 @@ function MailScreen() {
       setDeleteState({
         status: "error",
         message:
-          error instanceof Error ? error.message : "Unable to delete this message.",
+          error instanceof Error
+            ? error.message
+            : "Unable to delete this message.",
       });
     }
   }
@@ -352,7 +376,9 @@ function MailScreen() {
       setKeepState({
         status: "error",
         message:
-          error instanceof Error ? error.message : "Unable to keep this message.",
+          error instanceof Error
+            ? error.message
+            : "Unable to keep this message.",
       });
     }
   }
@@ -381,6 +407,13 @@ function MailScreen() {
     setExpenseMessageId(messageId);
   }
 
+  function openFolder(nextFolder: Folder) {
+    setFolder(nextFolder);
+    setSelectedId(null);
+    setSearchTerm("");
+    setScreen("inbox");
+  }
+
   function handleMobilePreviewBack() {
     if (screen === "reply") {
       setScreen("inbox");
@@ -404,11 +437,7 @@ function MailScreen() {
         <div className="brand-mark">L</div>
         <button
           className={folder === "inbox" ? "rail-button active" : "rail-button"}
-          onClick={() => {
-            setFolder("inbox");
-            setSelectedId(null);
-            setScreen("inbox");
-          }}
+          onClick={() => openFolder("inbox")}
           title="Inbox"
           type="button"
         >
@@ -418,11 +447,7 @@ function MailScreen() {
           className={
             folder === "archive" ? "rail-button active" : "rail-button"
           }
-          onClick={() => {
-            setFolder("archive");
-            setSelectedId(null);
-            setScreen("inbox");
-          }}
+          onClick={() => openFolder("archive")}
           title="Archive"
           type="button"
         >
@@ -430,11 +455,7 @@ function MailScreen() {
         </button>
         <button
           className={folder === "keep" ? "rail-button active" : "rail-button"}
-          onClick={() => {
-            setFolder("keep");
-            setSelectedId(null);
-            setScreen("inbox");
-          }}
+          onClick={() => openFolder("keep")}
           title="Keep"
           type="button"
         >
@@ -444,11 +465,7 @@ function MailScreen() {
           className={
             folder === "deleted" ? "rail-button active" : "rail-button"
           }
-          onClick={() => {
-            setFolder("deleted");
-            setSelectedId(null);
-            setScreen("inbox");
-          }}
+          onClick={() => openFolder("deleted")}
           title="Deleted"
           type="button"
         >
@@ -544,40 +561,32 @@ function MailScreen() {
         />
 
         <div className="messages">
-          {(folder === "deleted"
-            ? deletedMessages
-            : folder === "keep"
-              ? keptMessages
-              : messages) === undefined ? (
+          {isFolderLoading ? (
             <EmptyState title="Loading inbox" detail="Waiting for Convex..." />
           ) : filteredMessages.length === 0 ? (
             <EmptyState
               title={
-                (folder === "deleted"
-                  ? deletedMessages
-                  : folder === "keep"
-                    ? keptMessages
-                    : messages
-                )?.length === 0
+                folderMessages?.length === 0
                   ? folder === "deleted"
                     ? "No deleted mail"
                     : folder === "keep"
                       ? "No saved mail"
-                    : "No received mail yet"
+                      : "No received mail yet"
                   : "No matches"
               }
               detail={
-                (folder === "deleted" ? deletedMessages : messages)?.length ===
-                0
+                folderMessages?.length === 0
                   ? folder === "deleted"
                     ? "Deleted messages will appear here."
-                    : "Ask an administrator to link your avlec.co inbound address."
-                    : folder === "archive"
-                      ? "Archived messages and blocked senders will appear here."
-                      : folder === "keep"
-                        ? "Saved messages will appear here."
-                        : folder === "deleted"
-                          ? "Deleted messages will appear here."
+                    : folder === "keep"
+                      ? "Saved messages will appear here."
+                      : "Ask an administrator to link your avlec.co inbound address."
+                  : folder === "archive"
+                    ? "Archived messages and blocked senders will appear here."
+                    : folder === "keep"
+                      ? "Saved messages will appear here."
+                      : folder === "deleted"
+                        ? "Deleted messages will appear here."
                         : "Try another sender, subject, or recipient."
               }
             />
@@ -635,8 +644,8 @@ function MailScreen() {
                       className="icon-action block-action message-row-action message-block-action"
                       disabled={
                         folder === "deleted" ||
-                        blockState.status === "blocking" &&
-                        blockState.messageId === message._id
+                        (blockState.status === "blocking" &&
+                          blockState.messageId === message._id)
                       }
                       onClick={(event) => {
                         event.stopPropagation();
@@ -944,7 +953,10 @@ function ExpenseDialog({
           </section>
         ) : null}
 
-        <form className="expense-form" onSubmit={(event) => void handleSubmit(event)}>
+        <form
+          className="expense-form"
+          onSubmit={(event) => void handleSubmit(event)}
+        >
           <label className="editor-field">
             <span>Expense type</span>
             <input
@@ -1019,7 +1031,11 @@ function ExpenseDialog({
           ) : null}
 
           <div className="editor-actions">
-            <button className="primary-action" disabled={!canSave} type="submit">
+            <button
+              className="primary-action"
+              disabled={!canSave}
+              type="submit"
+            >
               {saveState.status === "saving" ? "Saving..." : "Save"}
             </button>
             <button className="ghost-action" onClick={onClose} type="button">
@@ -1223,7 +1239,10 @@ function AdminScreen() {
       for (;;) {
         const senderResult = await backfillSenderIndex({ beforeReceivedAt });
         senderIndexed += senderResult.indexed;
-        if (!senderResult.hasMore || senderResult.nextBeforeReceivedAt === null) {
+        if (
+          !senderResult.hasMore ||
+          senderResult.nextBeforeReceivedAt === null
+        ) {
           break;
         }
         beforeReceivedAt = senderResult.nextBeforeReceivedAt;
@@ -1395,7 +1414,7 @@ function AdminScreen() {
               value={
                 openRouterSystemPromptDirty
                   ? openRouterSystemPrompt
-                  : openRouterSettings?.systemPrompt ?? openRouterSystemPrompt
+                  : (openRouterSettings?.systemPrompt ?? openRouterSystemPrompt)
               }
             />
           </label>
@@ -1504,7 +1523,9 @@ function ComposePane({
   const attachmentInputId = useId();
   const [to, setTo] = useState(() => readDraft(COMPOSE_DRAFT_KEY).to);
   const [cc, setCc] = useState(() => readDraft(COMPOSE_DRAFT_KEY).cc);
-  const [from, setFrom] = useState(() => getDefaultSenderAddress(senderAddresses));
+  const [from, setFrom] = useState(() =>
+    getDefaultSenderAddress(senderAddresses),
+  );
   const [subject, setSubject] = useState(
     () => readDraft(COMPOSE_DRAFT_KEY).subject,
   );
@@ -1519,7 +1540,9 @@ function ComposePane({
     | { status: "error"; message: string }
   >({ status: "idle" });
   const recipients = parseRecipients(to);
-  const resolvedFrom = senderAddresses.some((address) => address.address === from)
+  const resolvedFrom = senderAddresses.some(
+    (address) => address.address === from,
+  )
     ? from
     : getDefaultSenderAddress(senderAddresses);
   const canSend =
@@ -2273,7 +2296,9 @@ function ReplyScreen({
   const attachmentInputId = useId();
   const draftKey = `life-mail:reply-draft:${message._id}`;
   const [cc, setCc] = useState(() => readDraft(draftKey).cc);
-  const [from, setFrom] = useState(() => getDefaultSenderAddress(senderAddresses));
+  const [from, setFrom] = useState(() =>
+    getDefaultSenderAddress(senderAddresses),
+  );
   const [prompt, setPrompt] = useState(() => readDraft(draftKey).prompt);
   const [text, setText] = useState(() => readDraft(draftKey).text);
   const [html, setHtml] = useState(() => readDraft(draftKey).html);
@@ -2297,7 +2322,9 @@ function ReplyScreen({
     | { status: "error"; message: string }
   >({ status: "idle" });
   const subject = replySubject(message.subject);
-  const resolvedFrom = senderAddresses.some((address) => address.address === from)
+  const resolvedFrom = senderAddresses.some(
+    (address) => address.address === from,
+  )
     ? from
     : getDefaultSenderAddress(senderAddresses);
   const canSend = text.trim().length > 0 && sendState.status !== "sending";
@@ -2482,7 +2509,9 @@ function ReplyScreen({
           }}
         >
           <div>
-            <p className="eyebrow">Reply to {displaySenderAddress(message.from)}</p>
+            <p className="eyebrow">
+              Reply to {displaySenderAddress(message.from)}
+            </p>
             <h2>{subject}</h2>
           </div>
 
@@ -2528,7 +2557,10 @@ function ReplyScreen({
               </button>
             </div>
             {promptState.status === "preview" ? (
-              <section className="prompt-preview" aria-label="AI prompt preview">
+              <section
+                className="prompt-preview"
+                aria-label="AI prompt preview"
+              >
                 <div>
                   <span>System</span>
                   <pre>
