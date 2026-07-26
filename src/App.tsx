@@ -9,6 +9,7 @@ import type {
 import { useAction, useConvexAuth, useMutation, useQuery } from "convex/react";
 import {
   Archive,
+  ArrowLeft,
   Ban,
   Download,
   Eye,
@@ -203,6 +204,14 @@ function MailScreen() {
   )
     ? selectedId
     : (filteredMessages[0]?._id ?? null);
+  const folderLabel =
+    folder === "archive"
+      ? "Archive"
+      : folder === "keep"
+        ? "Keep"
+        : folder === "deleted"
+          ? "Deleted"
+          : "Inbox";
   const selected = useQuery(
     api.emails.getReceived,
     selectedMessageId === null ? "skip" : { messageId: selectedMessageId },
@@ -372,8 +381,25 @@ function MailScreen() {
     setExpenseMessageId(messageId);
   }
 
+  function handleMobilePreviewBack() {
+    if (screen === "reply") {
+      setScreen("inbox");
+      return;
+    }
+
+    setSelectedId(null);
+  }
+
+  const mailShellClassName = [
+    "mail-shell",
+    isComposeOpen ? "compose-open" : "",
+    selectedId !== null ? "mobile-preview-open" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={isComposeOpen ? "mail-shell compose-open" : "mail-shell"}>
+    <div className={mailShellClassName}>
       <aside className="folder-rail" aria-label="Mail folders">
         <div className="brand-mark">L</div>
         <button
@@ -489,15 +515,7 @@ function MailScreen() {
       <section className="message-list" aria-label="Received messages">
         <div className="list-header">
           <div>
-            <h1>
-              {folder === "archive"
-                ? "Archive"
-                : folder === "keep"
-                  ? "Keep"
-                  : folder === "deleted"
-                    ? "Deleted"
-                  : "Inbox"}
-            </h1>
+            <h1>{folderLabel}</h1>
           </div>
           <div className="list-header-actions">
             <span className="message-count">{filteredMessages.length}</span>
@@ -682,6 +700,26 @@ function MailScreen() {
       </section>
 
       <main className="preview-pane" aria-label="Message preview">
+        {selectedId !== null ? (
+          <header className="mobile-preview-toolbar">
+            <button
+              aria-label={
+                screen === "reply"
+                  ? "Back to message"
+                  : `Back to ${folderLabel}`
+              }
+              className="mobile-preview-back"
+              onClick={handleMobilePreviewBack}
+              type="button"
+            >
+              <ArrowLeft aria-hidden="true" size={21} strokeWidth={2.2} />
+              <span>{screen === "reply" ? "Message" : folderLabel}</span>
+            </button>
+            <span className="mobile-preview-brand" aria-hidden="true">
+              L
+            </span>
+          </header>
+        ) : null}
         {selectedMessageId === null ? (
           <EmptyPreview />
         ) : selected === undefined ? (
