@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin, requireUser } from "./auth";
 import {
   action,
@@ -39,6 +39,19 @@ const outboundMessageValidator = {
   html: v.optional(v.string()),
   attachments: v.array(replyAttachmentValidator),
 };
+
+const sentMessageListItemValidator = v.object({
+  _id: v.id("sentMessages"),
+  from: v.string(),
+  to: v.array(v.string()),
+  cc: v.array(v.string()),
+  subject: v.string(),
+  text: v.string(),
+  html: v.union(v.string(), v.null()),
+  sentAt: v.number(),
+  resendEmailId: v.string(),
+  isReply: v.boolean(),
+});
 
 const SETTINGS_KEY = "global";
 const OPENROUTER_MODEL = "openrouter/auto";
@@ -87,6 +100,62 @@ export const listReceived = query({
   },
 });
 
+export const listSent = query({
+  args: { limit: v.optional(v.number()) },
+  returns: v.array(sentMessageListItemValidator),
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    const addresses = await ctx.db
+      .query("userEmailAddresses")
+      .withIndex("by_userId", (q) => q.eq("userId", user._id))
+      .take(100);
+    if (addresses.length === 0) {
+      return [];
+    }
+
+    const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
+    const addressSet = new Set(
+      addresses.map(({ address }) => address.trim().toLowerCase()),
+    );
+    const messagesById = new Map<
+      Id<"sentMessages">,
+      ReturnType<typeof toSentMessageListItem>
+    >();
+
+    for (const address of addressSet) {
+      const messages = await ctx.db
+        .query("sentMessages")
+        .withIndex("by_fromAddress_and_sentAt", (q) =>
+          q.eq("fromAddress", address),
+        )
+        .order("desc")
+        .take(limit);
+      for (const message of messages) {
+        messagesById.set(message._id, toSentMessageListItem(message));
+      }
+    }
+
+    // Older sent rows predate fromAddress. Keep them visible while new sends use
+    // the indexed path above; the bounded scan avoids exposing another user's mail.
+    const legacyMessages = await ctx.db
+      .query("sentMessages")
+      .withIndex("by_sent_at")
+      .order("desc")
+      .take(500);
+    for (const message of legacyMessages) {
+      if (
+        message.fromAddress === undefined &&
+        addressSet.has(normalizeSenderAddress(message.from))
+      ) {
+        messagesById.set(message._id, toSentMessageListItem(message));
+      }
+    }
+
+    return [...messagesById.values()]
+      .sort((left, right) => right.sentAt - left.sentAt)
+      .slice(0, limit);
+  },
+});
 export const listKeptReceived = query({
   args: {},
   handler: async (ctx) => {
@@ -249,7 +318,9 @@ export const getLastPreviousReceivedFromSender = query({
       .take(10);
 
     for (const previousMessage of senderMatches) {
-      if (await userCanAccessMessage(ctx, addressSet, previousMessage.messageId)) {
+      if (
+        await userCanAccessMessage(ctx, addressSet, previousMessage.messageId)
+      ) {
         return previousMessage.receivedAt;
       }
     }
@@ -436,7 +507,8 @@ export const backfillReceivedMessageSenderIndex = mutation({
         continue;
       }
 
-      const fromAddress = message.fromAddress ?? normalizeSenderAddress(message.from);
+      const fromAddress =
+        message.fromAddress ?? normalizeSenderAddress(message.from);
       if (fromAddress.length === 0) {
         skipped += 1;
         continue;
@@ -454,7 +526,8 @@ export const backfillReceivedMessageSenderIndex = mutation({
       indexed,
       skipped,
       nextBeforeReceivedAt,
-      hasMore: messages.length === RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE,
+      hasMore:
+        messages.length === RECEIVED_MESSAGE_SENDER_INDEX_BACKFILL_BATCH_SIZE,
     };
   },
 });
@@ -592,7 +665,10 @@ export const previewOpenRouterPrompt = action({
     originalMessageId: v.id("receivedMessages"),
     prompt: v.string(),
   },
-  handler: async (ctx, args): Promise<{ systemPrompt: string; prompt: string }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ systemPrompt: string; prompt: string }> => {
     const identity = await requireActionIdentity(ctx);
     const settings: OpenRouterSettings | null = await ctx.runQuery(
       internal.emails.getOpenRouterSettingsForAction,
@@ -1085,6 +1161,7 @@ export const storeSentMessage = internalMutation({
       originalMessageId: args.originalMessageId,
       originalResendMessageId: args.originalResendMessageId,
       from: args.from,
+      fromAddress: normalizeSenderAddress(args.from),
       to: args.to,
       cc: args.cc,
       subject: args.subject,
@@ -1095,6 +1172,21 @@ export const storeSentMessage = internalMutation({
     });
   },
 });
+
+function toSentMessageListItem(message: Doc<"sentMessages">) {
+  return {
+    _id: message._id,
+    from: message.from,
+    to: message.to,
+    cc: message.cc,
+    subject: message.subject,
+    text: message.text,
+    html: message.html ?? null,
+    sentAt: message.sentAt,
+    resendEmailId: message.resendEmailId,
+    isReply: message.originalMessageId !== undefined,
+  };
+}
 
 function normalizeSenderAddress(from: string) {
   const bracketedAddress = from.match(/<([^<>]+)>/)?.[1];
@@ -1235,7 +1327,10 @@ export const getOutboundSenderForUser = internalQuery({
       (left, right) => left.createdAt - right.createdAt,
     );
     const normalizedRequestedFrom = args.requestedFrom?.trim().toLowerCase();
-    if (normalizedRequestedFrom !== undefined && normalizedRequestedFrom !== "") {
+    if (
+      normalizedRequestedFrom !== undefined &&
+      normalizedRequestedFrom !== ""
+    ) {
       const matchingAddress = sortedAddresses.find(
         (address) => address.address === normalizedRequestedFrom,
       );
@@ -1335,19 +1430,22 @@ async function generateOpenRouterReply(
     { role: "user", content: prompt },
   ];
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://life-mail.local",
-      "X-Title": "Life Mail",
+  const response = await fetch(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://life-mail.local",
+        "X-Title": "Life Mail",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages,
+      }),
     },
-    body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages,
-    }),
-  });
+  );
   const responseBody = await response.text();
   if (!response.ok) {
     throw new Error(
@@ -1399,7 +1497,8 @@ async function prepareReceivedBodyForStorage(
   ctx: ActionCtx,
   body: Pick<ReceivedBody, "html" | "text">,
 ): Promise<StoredReceivedBody> {
-  const totalBodySize = encodedSize(body.html ?? "") + encodedSize(body.text ?? "");
+  const totalBodySize =
+    encodedSize(body.html ?? "") + encodedSize(body.text ?? "");
   const shouldStoreBody = totalBodySize > MAX_INLINE_BODY_BYTES;
   const htmlStorageId =
     body.html !== null && shouldStoreBody
@@ -1464,14 +1563,20 @@ async function getStoredReceivedBodyText(
   if (target.bodyText !== undefined && target.bodyText !== null) {
     return target.bodyText;
   }
-  if (target.bodyTextStorageId !== undefined && target.bodyTextStorageId !== null) {
+  if (
+    target.bodyTextStorageId !== undefined &&
+    target.bodyTextStorageId !== null
+  ) {
     const textBlob = await ctx.storage.get(target.bodyTextStorageId);
     return textBlob === null ? "" : await textBlob.text();
   }
   if (target.bodyHtml !== undefined && target.bodyHtml !== null) {
     return htmlToText(target.bodyHtml);
   }
-  if (target.bodyHtmlStorageId !== undefined && target.bodyHtmlStorageId !== null) {
+  if (
+    target.bodyHtmlStorageId !== undefined &&
+    target.bodyHtmlStorageId !== null
+  ) {
     const htmlBlob = await ctx.storage.get(target.bodyHtmlStorageId);
     return htmlBlob === null ? "" : htmlToText(await htmlBlob.text());
   }

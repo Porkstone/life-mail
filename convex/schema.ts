@@ -115,6 +115,7 @@ export default defineSchema({
     originalMessageId: v.optional(v.id("receivedMessages")),
     originalResendMessageId: v.string(),
     from: v.string(),
+    fromAddress: v.optional(v.string()),
     to: v.array(v.string()),
     cc: v.array(v.string()),
     subject: v.string(),
@@ -125,6 +126,7 @@ export default defineSchema({
   })
     .index("by_original_message_id", ["originalMessageId"])
     .index("by_resend_email_id", ["resendEmailId"])
+    .index("by_fromAddress_and_sentAt", ["fromAddress", "sentAt"])
     .index("by_sent_at", ["sentAt"]),
 
   blockedSenders: defineTable({

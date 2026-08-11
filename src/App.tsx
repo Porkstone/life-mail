@@ -21,6 +21,7 @@ import {
   ReceiptText,
   Save,
   Search,
+  Send,
   Settings,
   Shield,
   Sparkles,
@@ -34,9 +35,10 @@ import type { Id } from "../convex/_generated/dataModel";
 import { needsManualSignIn, signIn, signOut } from "./shoo";
 
 const PAGE_SIZE = 50;
+const SENT_PAGE_SIZE = 500;
 const COMPOSE_DRAFT_KEY = "life-mail:compose-draft";
 type Screen = "inbox" | "reply";
-type Folder = "inbox" | "archive" | "keep" | "deleted";
+type Folder = "inbox" | "sent" | "archive" | "keep" | "deleted";
 type MessageContextMenuState = {
   messageId: Id<"receivedMessages">;
   x: number;
@@ -122,11 +124,17 @@ function MailScreen() {
     api.emails.listDeletedReceived,
     folder === "deleted" ? {} : "skip",
   );
+  const sentMessages = useQuery(
+    api.emails.listSent,
+    folder === "sent" ? { limit: SENT_PAGE_SIZE } : "skip",
+  );
   const viewer = useQuery(api.auth.viewer, {});
   const [selectedId, setSelectedId] = useState<Id<"receivedMessages"> | null>(
     null,
   );
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedSentId, setSelectedSentId] =
+    useState<Id<"sentMessages"> | null>(null);
   const [screen, setScreen] = useState<Screen>("inbox");
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [messageContextMenu, setMessageContextMenu] =
@@ -175,15 +183,19 @@ function MailScreen() {
   }, [keptMessages, messages]);
 
   const folderMessages =
-    folder === "deleted"
-      ? deletedMessages
-      : folder === "keep"
-        ? mergedKeptMessages
-        : messages;
+    folder === "sent"
+      ? undefined
+      : folder === "deleted"
+        ? deletedMessages
+        : folder === "keep"
+          ? mergedKeptMessages
+          : messages;
   const isFolderLoading =
-    folder === "keep"
-      ? keptMessages === undefined && mergedKeptMessages.length === 0
-      : folderMessages === undefined;
+    folder === "sent"
+      ? sentMessages === undefined
+      : folder === "keep"
+        ? keptMessages === undefined && mergedKeptMessages.length === 0
+        : folderMessages === undefined;
 
   const filteredMessages = useMemo(() => {
     if (folderMessages === undefined) {
@@ -221,19 +233,54 @@ function MailScreen() {
     );
   }, [folder, folderMessages, searchTerm]);
 
+  const filteredSentMessages = useMemo(() => {
+    if (sentMessages === undefined) {
+      return [];
+    }
+
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    if (normalizedSearch.length === 0) {
+      return sentMessages;
+    }
+
+    return sentMessages.filter((message) =>
+      [
+        message.from,
+        message.subject,
+        message.to.join(" "),
+        message.cc.join(" "),
+        message.resendEmailId,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearch),
+    );
+  }, [searchTerm, sentMessages]);
+
   const selectedMessageId = filteredMessages.some(
     (message) => message._id === selectedId,
   )
     ? selectedId
     : (filteredMessages[0]?._id ?? null);
+  const selectedSentMessageId = filteredSentMessages.some(
+    (message) => message._id === selectedSentId,
+  )
+    ? selectedSentId
+    : (filteredSentMessages[0]?._id ?? null);
+  const selectedSentMessage = filteredSentMessages.find(
+    (message) => message._id === selectedSentMessageId,
+  );
+
   const folderLabel =
-    folder === "archive"
-      ? "Archive"
-      : folder === "keep"
-        ? "Keep"
-        : folder === "deleted"
-          ? "Deleted"
-          : "Inbox";
+    folder === "sent"
+      ? "Sent"
+      : folder === "archive"
+        ? "Archive"
+        : folder === "keep"
+          ? "Keep"
+          : folder === "deleted"
+            ? "Deleted"
+            : "Inbox";
   const selected = useQuery(
     api.emails.getReceived,
     selectedMessageId === null ? "skip" : { messageId: selectedMessageId },
@@ -410,6 +457,7 @@ function MailScreen() {
   function openFolder(nextFolder: Folder) {
     setFolder(nextFolder);
     setSelectedId(null);
+    setSelectedSentId(null);
     setSearchTerm("");
     setScreen("inbox");
   }
@@ -421,12 +469,13 @@ function MailScreen() {
     }
 
     setSelectedId(null);
+    setSelectedSentId(null);
   }
 
   const mailShellClassName = [
     "mail-shell",
     isComposeOpen ? "compose-open" : "",
-    selectedId !== null ? "mobile-preview-open" : "",
+    selectedId !== null || selectedSentId !== null ? "mobile-preview-open" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -442,6 +491,14 @@ function MailScreen() {
           type="button"
         >
           <Inbox aria-hidden="true" size={20} strokeWidth={2.2} />
+        </button>
+        <button
+          className={folder === "sent" ? "rail-button active" : "rail-button"}
+          onClick={() => openFolder("sent")}
+          title="Sent"
+          type="button"
+        >
+          <Send aria-hidden="true" size={20} strokeWidth={2.2} />
         </button>
         <button
           className={
@@ -529,13 +586,17 @@ function MailScreen() {
         </button>
       </aside>
 
-      <section className="message-list" aria-label="Received messages">
+      <section className="message-list" aria-label={`${folderLabel} messages`}>
         <div className="list-header">
           <div>
             <h1>{folderLabel}</h1>
           </div>
           <div className="list-header-actions">
-            <span className="message-count">{filteredMessages.length}</span>
+            <span className="message-count">
+              {folder === "sent"
+                ? filteredSentMessages.length
+                : filteredMessages.length}
+            </span>
             <button
               aria-label="Compose new message"
               className={
@@ -562,7 +623,63 @@ function MailScreen() {
 
         <div className="messages">
           {isFolderLoading ? (
-            <EmptyState title="Loading inbox" detail="Waiting for Convex..." />
+            <EmptyState
+              title={`Loading ${folderLabel.toLowerCase()}`}
+              detail="Waiting for Convex..."
+            />
+          ) : folder === "sent" ? (
+            filteredSentMessages.length === 0 ? (
+              <EmptyState
+                title={
+                  sentMessages?.length === 0 ? "No sent mail yet" : "No matches"
+                }
+                detail={
+                  sentMessages?.length === 0
+                    ? "Messages you compose and replies you send will appear here."
+                    : "Try another sender, subject, or recipient."
+                }
+              />
+            ) : (
+              filteredSentMessages.map((message) => (
+                <div
+                  className={
+                    message._id === selectedSentMessageId
+                      ? "message-row selected"
+                      : "message-row"
+                  }
+                  key={message._id}
+                  onClick={() => {
+                    setSelectedSentId(message._id);
+                    setSelectedId(null);
+                    setScreen("inbox");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedSentId(message._id);
+                      setSelectedId(null);
+                      setScreen("inbox");
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <span className="message-row-top">
+                    <span className="message-sender">
+                      To{" "}
+                      {message.to.length > 0
+                        ? message.to.map(displaySender).join(", ")
+                        : "Unknown recipient"}
+                    </span>
+                  </span>
+                  <span className="message-subject">{message.subject}</span>
+                  <span className="message-meta">
+                    {formatDate(message.sentAt)}
+                    {message.isReply ? " - Reply" : " - Message"}
+                  </span>
+                </div>
+              ))
+            )
           ) : filteredMessages.length === 0 ? (
             <EmptyState
               title={
@@ -709,7 +826,7 @@ function MailScreen() {
       </section>
 
       <main className="preview-pane" aria-label="Message preview">
-        {selectedId !== null ? (
+        {selectedId !== null || selectedSentId !== null ? (
           <header className="mobile-preview-toolbar">
             <button
               aria-label={
@@ -729,7 +846,13 @@ function MailScreen() {
             </span>
           </header>
         ) : null}
-        {selectedMessageId === null ? (
+        {folder === "sent" ? (
+          selectedSentMessage === undefined ? (
+            <EmptyPreview />
+          ) : (
+            <SentMessagePreview message={selectedSentMessage} />
+          )
+        ) : selectedMessageId === null ? (
           <EmptyPreview />
         ) : selected === undefined ? (
           <EmptyPreview title="Loading message" />
@@ -1951,6 +2074,77 @@ function SettingsScreen() {
         </div>
       </section>
     </main>
+  );
+}
+
+function SentMessagePreview({
+  message,
+}: {
+  message: {
+    _id: Id<"sentMessages">;
+    from: string;
+    to: string[];
+    cc: string[];
+    subject: string;
+    text: string;
+    html: string | null;
+    sentAt: number;
+    resendEmailId: string;
+    isReply: boolean;
+  };
+}) {
+  return (
+    <article className="message-preview">
+      <header className="preview-header">
+        <div>
+          <p className="eyebrow">{formatDate(message.sentAt)}</p>
+          <h2>{message.subject}</h2>
+        </div>
+      </header>
+
+      <section className="sender-block">
+        <div className="avatar">{initials(message.from)}</div>
+        <div>
+          <p className="from-line">{message.from}</p>
+          <p className="to-line">
+            To{" "}
+            {message.to.length > 0
+              ? message.to.map(displaySender).join(", ")
+              : "unknown"}
+          </p>
+          {message.cc.length > 0 ? (
+            <p className="to-line">
+              Cc {message.cc.map(displaySender).join(", ")}
+            </p>
+          ) : null}
+        </div>
+      </section>
+
+      <MessageBody
+        bodyState={{
+          status: "ready",
+          body: {
+            html: message.html,
+            text: message.text,
+          },
+        }}
+      />
+
+      <dl className="metadata-grid">
+        <div>
+          <dt>Email ID</dt>
+          <dd>{message.resendEmailId || "Unavailable"}</dd>
+        </div>
+        <div>
+          <dt>Type</dt>
+          <dd>{message.isReply ? "Reply" : "New message"}</dd>
+        </div>
+        <div>
+          <dt>Sent</dt>
+          <dd>{formatDate(message.sentAt)}</dd>
+        </div>
+      </dl>
+    </article>
   );
 }
 
