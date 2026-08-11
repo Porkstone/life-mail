@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
+import type * as emailNotifications from "../emailNotifications.js";
 import type * as emails from "../emails.js";
 import type * as expenses from "../expenses.js";
 import type * as http from "../http.js";
@@ -23,6 +24,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   crons: typeof crons;
+  emailNotifications: typeof emailNotifications;
   emails: typeof emails;
   expenses: typeof expenses;
   http: typeof http;

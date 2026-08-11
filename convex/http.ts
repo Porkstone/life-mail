@@ -24,6 +24,28 @@ type ResendReceivedEmailEvent = {
   };
 };
 
+type ResendBouncedEmailEvent = {
+  type: "email.bounced";
+  created_at: string;
+  data: {
+    email_id: string;
+    created_at?: string;
+    from: string;
+    to?: string[];
+    subject?: string;
+    bounce?: {
+      diagnosticCode?: string[];
+      message?: string;
+      subType?: string;
+      type?: string;
+    };
+  };
+};
+
+type ResendWebhookEvent =
+  | ResendReceivedEmailEvent
+  | ResendBouncedEmailEvent;
+
 const http = httpRouter();
 
 http.route({
@@ -55,11 +77,36 @@ http.route({
       return json({ error: "Invalid webhook signature" }, 400);
     }
 
-    let event: Partial<ResendReceivedEmailEvent>;
+    let event: Partial<ResendWebhookEvent>;
     try {
-      event = JSON.parse(payload) as Partial<ResendReceivedEmailEvent>;
+      event = JSON.parse(payload) as Partial<ResendWebhookEvent>;
     } catch {
       return json({ error: "Invalid JSON payload" }, 400);
+    }
+
+    if (event.type === "email.bounced" && event.data !== undefined) {
+      if (event.data.email_id === undefined || event.data.from === undefined) {
+        return json({ error: "Invalid email.bounced payload" }, 400);
+      }
+
+      const occurredAt =
+        Date.parse(event.created_at ?? event.data.created_at ?? "") || Date.now();
+      await ctx.runMutation(internal.emailNotifications.storeResendBounce, {
+        webhookId,
+        resendEmailId: event.data.email_id,
+        from: event.data.from,
+        recipients: event.data.to ?? [],
+        subject: event.data.subject ?? "(no subject)",
+        reason:
+          event.data.bounce?.message ??
+          "The recipient's mail server rejected this email.",
+        bounceType: event.data.bounce?.type ?? "Unknown",
+        bounceSubtype: event.data.bounce?.subType ?? "Unknown",
+        diagnosticCodes: event.data.bounce?.diagnosticCode ?? [],
+        occurredAt,
+      });
+
+      return json({ ok: true });
     }
 
     if (event.type !== "email.received" || event.data === undefined) {

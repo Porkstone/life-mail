@@ -129,6 +129,27 @@ export default defineSchema({
     .index("by_fromAddress_and_sentAt", ["fromAddress", "sentAt"])
     .index("by_sent_at", ["sentAt"]),
 
+  emailBounceNotifications: defineTable({
+    webhookId: v.string(),
+    resendEmailId: v.string(),
+    sentMessageId: v.optional(v.id("sentMessages")),
+    fromAddress: v.string(),
+    recipients: v.array(v.string()),
+    subject: v.string(),
+    reason: v.string(),
+    bounceType: v.string(),
+    bounceSubtype: v.string(),
+    diagnosticCodes: v.array(v.string()),
+    occurredAt: v.number(),
+    dismissedAt: v.optional(v.number()),
+  })
+    .index("by_webhookId", ["webhookId"])
+    .index("by_fromAddress_and_dismissedAt_and_occurredAt", [
+      "fromAddress",
+      "dismissedAt",
+      "occurredAt",
+    ]),
+
   blockedSenders: defineTable({
     address: v.string(),
     blockedAt: v.number(),

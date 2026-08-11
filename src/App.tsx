@@ -11,6 +11,7 @@ import {
   Archive,
   ArrowLeft,
   Ban,
+  CircleAlert,
   Download,
   Eye,
   File,
@@ -102,12 +103,99 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route element={<MailScreen />} path="/" />
-      <Route element={<ExpensesScreen />} path="/expenses" />
-      <Route element={<SettingsScreen />} path="/settings" />
-      <Route element={<AdminScreen />} path="/admin" />
-    </Routes>
+    <>
+      <BounceNotificationCenter />
+      <Routes>
+        <Route element={<MailScreen />} path="/" />
+        <Route element={<ExpensesScreen />} path="/expenses" />
+        <Route element={<SettingsScreen />} path="/settings" />
+        <Route element={<AdminScreen />} path="/admin" />
+      </Routes>
+    </>
+  );
+}
+
+function BounceNotificationCenter() {
+  const notifications = useQuery(
+    api.emailNotifications.listActiveBounces,
+    {},
+  );
+  const dismissBounce = useMutation(api.emailNotifications.dismissBounce);
+  const [dismissingIds, setDismissingIds] = useState<
+    Set<Id<"emailBounceNotifications">>
+  >(new Set());
+
+  async function handleDismiss(
+    notificationId: Id<"emailBounceNotifications">,
+  ) {
+    setDismissingIds((current) => new Set(current).add(notificationId));
+    try {
+      await dismissBounce({ notificationId });
+    } catch {
+      setDismissingIds((current) => {
+        const next = new Set(current);
+        next.delete(notificationId);
+        return next;
+      });
+    }
+  }
+
+  if (notifications === undefined || notifications.length === 0) {
+    return null;
+  }
+
+  return (
+    <aside
+      aria-label="Email delivery notifications"
+      aria-live="polite"
+      className="bounce-notification-center"
+    >
+      {notifications.map((notification) => {
+        const isDismissing = dismissingIds.has(notification._id);
+        const recipients =
+          notification.recipients.length > 0
+            ? notification.recipients.join(", ")
+            : "the recipient";
+
+        return (
+          <section
+            className={
+              isDismissing
+                ? "bounce-notification dismissing"
+                : "bounce-notification"
+            }
+            key={notification._id}
+          >
+            <div className="bounce-notification-icon" aria-hidden="true">
+              <CircleAlert size={20} strokeWidth={2.2} />
+            </div>
+            <div className="bounce-notification-copy">
+              <p className="bounce-notification-kicker">Delivery failed</p>
+              <h2>{notification.subject}</h2>
+              <p className="bounce-notification-recipient">
+                Your message to <strong>{recipients}</strong> bounced.
+              </p>
+              <p className="bounce-notification-reason">
+                {notification.reason}
+              </p>
+              <time dateTime={new Date(notification.occurredAt).toISOString()}>
+                {formatDate(notification.occurredAt)}
+              </time>
+            </div>
+            <button
+              aria-label={`Dismiss bounce notification for ${notification.subject}`}
+              className="bounce-notification-dismiss"
+              disabled={isDismissing}
+              onClick={() => void handleDismiss(notification._id)}
+              title="Dismiss"
+              type="button"
+            >
+              <X aria-hidden="true" size={18} strokeWidth={2.2} />
+            </button>
+          </section>
+        );
+      })}
+    </aside>
   );
 }
 
@@ -1729,7 +1817,7 @@ function ComposePane({
         to: recipients,
         cc: parseRecipients(cc),
         subject: subject.trim(),
-        text: text.trim(),
+        text: normalizeLineEndings(text),
         html: serializeEditorHtml(html),
         attachments: [
           ...attachments.map((attachment) => ({
@@ -2580,7 +2668,7 @@ function ReplyScreen({
         prompt: prompt.trim(),
       });
       setText(reply.text);
-      setHtml(escapeHtml(reply.text).replace(/\r?\n/g, "<br>"));
+      setHtml(escapeHtml(normalizeLineEndings(reply.text)).replace(/\n/g, "<br>"));
       setInlineImages([]);
       resetSendState();
       setPromptState({ status: "idle" });
@@ -2631,7 +2719,7 @@ function ReplyScreen({
         to: [message.from],
         cc: parseRecipients(cc),
         subject,
-        text: text.trim(),
+        text: normalizeLineEndings(text),
         html: serializeEditorHtml(html),
         attachments: [
           ...attachments.map((attachment) => ({
@@ -3034,7 +3122,7 @@ function InlineBodyEditor({
 
     onChange({
       html: editor.innerHTML,
-      text: editor.innerText,
+      text: editorToPlainText(editor),
       inlineImages: inlineImagesRef.current,
     });
   }
@@ -3047,7 +3135,9 @@ function InlineBodyEditor({
     );
     const text = event.clipboardData.getData("text/plain");
     if (text.length > 0) {
-      insertHtmlAtSelection(escapeHtml(text).replace(/\r?\n/g, "<br>"));
+      insertHtmlAtSelection(
+        escapeHtml(normalizeLineEndings(text)).replace(/\n/g, "<br>"),
+      );
     }
 
     for (const file of pastedImages) {
@@ -3332,7 +3422,116 @@ function serializeEditorHtml(html: string) {
     image.removeAttribute("data-content-id");
   }
 
-  return document.body.firstElementChild?.innerHTML ?? "";
+  const root = document.body.firstElementChild;
+  if (root === null) {
+    return "";
+  }
+
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let currentNode = walker.nextNode();
+  while (currentNode !== null) {
+    textNodes.push(currentNode as Text);
+    currentNode = walker.nextNode();
+  }
+
+  for (const textNode of textNodes) {
+    const value = normalizeLineEndings(textNode.data);
+    if (!value.includes("\n") || value.trim().length === 0) {
+      continue;
+    }
+
+    const fragment = document.createDocumentFragment();
+    const lines = value.split("\n");
+    lines.forEach((line, index) => {
+      if (index > 0) {
+        fragment.append(document.createElement("br"));
+      }
+      fragment.append(document.createTextNode(line));
+    });
+    textNode.replaceWith(fragment);
+  }
+
+  return root.innerHTML;
+}
+
+const EDITOR_BLOCK_ELEMENTS = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "DIV",
+  "DL",
+  "DT",
+  "DD",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "P",
+  "PRE",
+  "SECTION",
+  "TABLE",
+  "TR",
+  "UL",
+]);
+
+function editorToPlainText(editor: HTMLElement) {
+  let result = "";
+
+  function appendNewline() {
+    if (result.length > 0 && !result.endsWith("\n")) {
+      result += "\n";
+    }
+  }
+
+  function visit(node: Node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      result += normalizeLineEndings(node.textContent ?? "").replace(
+        /\u00a0/g,
+        " ",
+      );
+      return;
+    }
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+    if (node.tagName === "BR") {
+      result += "\n";
+      return;
+    }
+
+    const isBlock = EDITOR_BLOCK_ELEMENTS.has(node.tagName);
+    if (isBlock) {
+      appendNewline();
+    }
+    for (const child of Array.from(node.childNodes)) {
+      visit(child);
+    }
+    if (isBlock) {
+      appendNewline();
+    }
+  }
+
+  for (const child of Array.from(editor.childNodes)) {
+    visit(child);
+  }
+
+  return result.endsWith("\n") ? result.slice(0, -1) : result;
+}
+
+function normalizeLineEndings(value: string) {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function escapeHtml(value: string) {

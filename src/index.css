@@ -23,6 +23,136 @@ body {
   min-height: 100vh;
 }
 
+.bounce-notification-center {
+  position: fixed;
+  z-index: 1000;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  width: min(420px, calc(100vw - 36px));
+  max-height: calc(100dvh - 36px);
+  gap: 10px;
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.bounce-notification {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 16px 14px 16px 16px;
+  border: 1px solid #d9a7aa;
+  border-left: 4px solid #a4262c;
+  border-radius: 8px;
+  color: #3b1719;
+  background: rgba(255, 250, 250, 0.98);
+  box-shadow: 0 14px 34px rgba(63, 18, 21, 0.18);
+  pointer-events: auto;
+  animation: bounce-notification-enter 180ms ease-out both;
+}
+
+.bounce-notification.dismissing {
+  opacity: 0.56;
+}
+
+.bounce-notification-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #a4262c;
+}
+
+.bounce-notification-copy {
+  min-width: 0;
+}
+
+.bounce-notification-kicker {
+  margin: 0 0 3px;
+  color: #a4262c;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.bounce-notification h2 {
+  overflow: hidden;
+  margin: 0 0 7px;
+  color: #2f1113;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bounce-notification-recipient,
+.bounce-notification-reason {
+  font-size: 13px;
+  line-height: 1.42;
+}
+
+.bounce-notification-recipient {
+  margin-bottom: 3px;
+}
+
+.bounce-notification-reason {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #704044;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.bounce-notification time {
+  display: block;
+  margin-top: 8px;
+  color: #865c5f;
+  font-size: 11px;
+}
+
+.bounce-notification-dismiss {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  color: #704044;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bounce-notification-dismiss:hover {
+  color: #ffffff;
+  background: #a4262c;
+}
+
+.bounce-notification-dismiss:focus-visible {
+  outline: 2px solid #a4262c;
+  outline-offset: 2px;
+}
+
+.bounce-notification-dismiss:disabled {
+  cursor: wait;
+}
+
+@keyframes bounce-notification-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 button {
   font: inherit;
 }
@@ -1551,6 +1681,17 @@ dd {
 }
 
 @media (max-width: 560px) {
+  .bounce-notification-center {
+    top: max(10px, env(safe-area-inset-top));
+    right: 10px;
+    width: calc(100vw - 20px);
+    max-height: calc(100dvh - 20px - env(safe-area-inset-top));
+  }
+
+  .bounce-notification {
+    padding: 14px 10px 14px 13px;
+  }
+
   .mail-shell {
     height: 100dvh;
     grid-template-columns: 1fr;
