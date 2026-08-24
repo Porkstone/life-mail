@@ -2,8 +2,10 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   ChangeEvent,
   ClipboardEvent,
+  CSSProperties,
   FormEvent,
   MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
 import { useAction, useConvexAuth, useMutation, useQuery } from "convex/react";
@@ -38,6 +40,7 @@ import { needsManualSignIn, signIn, signOut } from "./shoo";
 const PAGE_SIZE = 50;
 const SENT_PAGE_SIZE = 500;
 const COMPOSE_DRAFT_KEY = "life-mail:compose-draft";
+const MOBILE_SWIPE_ACTION_WIDTH = 216;
 type Screen = "inbox" | "reply";
 type Folder = "inbox" | "sent" | "archive" | "keep" | "deleted";
 type MessageContextMenuState = {
@@ -49,6 +52,19 @@ type SenderAddress = {
   _id: Id<"userEmailAddresses">;
   address: string;
   createdAt: number;
+};
+type MessageSwipeState = {
+  messageId: Id<"receivedMessages"> | null;
+  offset: number;
+  dragging: boolean;
+};
+type MessageSwipeGesture = {
+  messageId: Id<"receivedMessages">;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startingOffset: number;
+  axis: "horizontal" | "vertical" | null;
 };
 
 export default function App() {
@@ -116,18 +132,13 @@ export default function App() {
 }
 
 function BounceNotificationCenter() {
-  const notifications = useQuery(
-    api.emailNotifications.listActiveBounces,
-    {},
-  );
+  const notifications = useQuery(api.emailNotifications.listActiveBounces, {});
   const dismissBounce = useMutation(api.emailNotifications.dismissBounce);
   const [dismissingIds, setDismissingIds] = useState<
     Set<Id<"emailBounceNotifications">>
   >(new Set());
 
-  async function handleDismiss(
-    notificationId: Id<"emailBounceNotifications">,
-  ) {
+  async function handleDismiss(notificationId: Id<"emailBounceNotifications">) {
     setDismissingIds((current) => new Set(current).add(notificationId));
     try {
       await dismissBounce({ notificationId });
@@ -249,6 +260,13 @@ function MailScreen() {
     | { status: "keeping"; messageId: Id<"receivedMessages"> }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [messageSwipe, setMessageSwipe] = useState<MessageSwipeState>({
+    messageId: null,
+    offset: 0,
+    dragging: false,
+  });
+  const messageSwipeGesture = useRef<MessageSwipeGesture | null>(null);
+  const suppressMessageOpen = useRef<Id<"receivedMessages"> | null>(null);
 
   const mergedKeptMessages = useMemo(() => {
     const byId = new Map<
@@ -548,6 +566,124 @@ function MailScreen() {
     setSelectedSentId(null);
     setSearchTerm("");
     setScreen("inbox");
+    closeMessageSwipe();
+  }
+
+  function closeMessageSwipe() {
+    messageSwipeGesture.current = null;
+    setMessageSwipe({ messageId: null, offset: 0, dragging: false });
+  }
+
+  function handleMessagePointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+    messageId: Id<"receivedMessages">,
+  ) {
+    if (
+      event.pointerType === "mouse" ||
+      event.button !== 0 ||
+      folder === "deleted" ||
+      !window.matchMedia("(max-width: 560px)").matches
+    ) {
+      return;
+    }
+
+    const startingOffset =
+      messageSwipe.messageId === messageId ? messageSwipe.offset : 0;
+    messageSwipeGesture.current = {
+      messageId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startingOffset,
+      axis: null,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setMessageSwipe({ messageId, offset: startingOffset, dragging: true });
+  }
+
+  function handleMessagePointerMove(
+    event: ReactPointerEvent<HTMLDivElement>,
+    messageId: Id<"receivedMessages">,
+  ) {
+    const gesture = messageSwipeGesture.current;
+    if (
+      gesture === null ||
+      gesture.messageId !== messageId ||
+      gesture.pointerId !== event.pointerId
+    ) {
+      return;
+    }
+
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    if (
+      gesture.axis === null &&
+      Math.max(Math.abs(deltaX), Math.abs(deltaY)) > 6
+    ) {
+      gesture.axis =
+        Math.abs(deltaX) > Math.abs(deltaY) ? "horizontal" : "vertical";
+    }
+    if (gesture.axis !== "horizontal") {
+      return;
+    }
+
+    event.preventDefault();
+    const offset = Math.max(
+      -MOBILE_SWIPE_ACTION_WIDTH,
+      Math.min(0, gesture.startingOffset + deltaX),
+    );
+    setMessageSwipe({ messageId, offset, dragging: true });
+  }
+
+  function finishMessageSwipe(
+    event: ReactPointerEvent<HTMLDivElement>,
+    messageId: Id<"receivedMessages">,
+  ) {
+    const gesture = messageSwipeGesture.current;
+    if (
+      gesture === null ||
+      gesture.messageId !== messageId ||
+      gesture.pointerId !== event.pointerId
+    ) {
+      return;
+    }
+
+    const deltaX = event.clientX - gesture.startX;
+    const finalOffset = Math.max(
+      -MOBILE_SWIPE_ACTION_WIDTH,
+      Math.min(0, gesture.startingOffset + deltaX),
+    );
+    const shouldOpen =
+      gesture.axis === "horizontal" &&
+      (finalOffset <= -MOBILE_SWIPE_ACTION_WIDTH * 0.35 || deltaX < -48);
+    if (gesture.axis === "horizontal" || gesture.startingOffset < 0) {
+      suppressMessageOpen.current = messageId;
+    }
+    messageSwipeGesture.current = null;
+    setMessageSwipe(
+      shouldOpen
+        ? {
+            messageId,
+            offset: -MOBILE_SWIPE_ACTION_WIDTH,
+            dragging: false,
+          }
+        : { messageId: null, offset: 0, dragging: false },
+    );
+  }
+
+  function handleReceivedMessageClick(messageId: Id<"receivedMessages">) {
+    if (suppressMessageOpen.current === messageId) {
+      suppressMessageOpen.current = null;
+      return;
+    }
+    if (messageSwipe.messageId === messageId && messageSwipe.offset < 0) {
+      closeMessageSwipe();
+      return;
+    }
+
+    closeMessageSwipe();
+    setSelectedId(messageId);
+    setScreen("inbox");
   }
 
   function handleMobilePreviewBack() {
@@ -797,116 +933,209 @@ function MailScreen() {
             />
           ) : (
             filteredMessages.map((message) => (
-              <div
-                className={
-                  message._id === selectedMessageId
-                    ? "message-row selected"
-                    : "message-row"
-                }
-                key={message._id}
-                onClick={() => {
-                  setSelectedId(message._id);
-                  setScreen("inbox");
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setSelectedId(message._id);
-                    setScreen("inbox");
+              <div className="swipe-message-row" key={message._id}>
+                <div
+                  className="swipe-message-actions"
+                  aria-label="Message actions"
+                  onFocus={() =>
+                    setMessageSwipe({
+                      messageId: message._id,
+                      offset: -MOBILE_SWIPE_ACTION_WIDTH,
+                      dragging: false,
+                    })
                   }
-                }}
-                onContextMenu={(event) =>
-                  openMessageContextMenu(event, message._id)
-                }
-                role="button"
-                tabIndex={0}
-              >
-                <span className="message-row-top">
-                  <span className="message-sender">
-                    {displaySender(message.from)}
+                >
+                  <button
+                    aria-label="Archive message"
+                    className="swipe-message-action swipe-archive-action"
+                    disabled={
+                      message.archived === true ||
+                      (archiveState.status === "archiving" &&
+                        archiveState.messageId === message._id)
+                    }
+                    onClick={() => {
+                      closeMessageSwipe();
+                      void handleArchiveMessage(message._id);
+                    }}
+                    type="button"
+                  >
+                    <Archive aria-hidden="true" size={20} strokeWidth={2.2} />
+                    <span>Archive</span>
+                  </button>
+                  <button
+                    aria-label="Delete message"
+                    className="swipe-message-action swipe-delete-action"
+                    disabled={
+                      deleteState.status === "deleting" &&
+                      deleteState.messageId === message._id
+                    }
+                    onClick={() => {
+                      closeMessageSwipe();
+                      void handleDeleteMessage(message._id);
+                    }}
+                    type="button"
+                  >
+                    <Trash2 aria-hidden="true" size={20} strokeWidth={2.2} />
+                    <span>Delete</span>
+                  </button>
+                  <button
+                    aria-label="Block sender and delete message"
+                    className="swipe-message-action swipe-block-action"
+                    disabled={
+                      blockState.status === "blocking" &&
+                      blockState.messageId === message._id
+                    }
+                    onClick={() => {
+                      closeMessageSwipe();
+                      void handleBlockSender(message._id);
+                    }}
+                    type="button"
+                  >
+                    <Ban aria-hidden="true" size={20} strokeWidth={2.2} />
+                    <span>Block</span>
+                  </button>
+                </div>
+                <div
+                  aria-label={`${displaySender(message.from)}, ${message.subject}. Swipe left for actions.`}
+                  className={[
+                    "message-row",
+                    message._id === selectedMessageId ? "selected" : "",
+                    messageSwipe.messageId === message._id &&
+                    messageSwipe.dragging
+                      ? "swiping"
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => handleReceivedMessageClick(message._id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      handleReceivedMessageClick(message._id);
+                    }
+                  }}
+                  onContextMenu={(event) =>
+                    openMessageContextMenu(event, message._id)
+                  }
+                  onPointerCancel={(event) =>
+                    finishMessageSwipe(event, message._id)
+                  }
+                  onPointerDown={(event) =>
+                    handleMessagePointerDown(event, message._id)
+                  }
+                  onPointerMove={(event) =>
+                    handleMessagePointerMove(event, message._id)
+                  }
+                  onPointerUp={(event) =>
+                    finishMessageSwipe(event, message._id)
+                  }
+                  role="button"
+                  style={
+                    {
+                      "--swipe-offset": `${
+                        messageSwipe.messageId === message._id
+                          ? messageSwipe.offset
+                          : 0
+                      }px`,
+                    } as CSSProperties
+                  }
+                  tabIndex={0}
+                >
+                  <span className="message-row-top">
+                    <span className="message-sender">
+                      {displaySender(message.from)}
+                    </span>
+                    <span className="message-row-actions">
+                      <button
+                        aria-label="Archive message"
+                        className="icon-action message-row-action message-archive-action"
+                        disabled={
+                          folder === "deleted" ||
+                          message.archived === true ||
+                          (archiveState.status === "archiving" &&
+                            archiveState.messageId === message._id)
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleArchiveMessage(message._id);
+                        }}
+                        title="Archive message"
+                        type="button"
+                      >
+                        <Archive
+                          aria-hidden="true"
+                          size={15}
+                          strokeWidth={2.3}
+                        />
+                      </button>
+                      <button
+                        aria-label="Block sender and delete message"
+                        className="icon-action block-action message-row-action message-block-action"
+                        disabled={
+                          folder === "deleted" ||
+                          (blockState.status === "blocking" &&
+                            blockState.messageId === message._id)
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleBlockSender(message._id);
+                        }}
+                        title="Block sender and delete"
+                        type="button"
+                      >
+                        <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
+                      </button>
+                      <button
+                        aria-label="Move message to Keep"
+                        className="icon-action message-row-action message-keep-action"
+                        disabled={
+                          folder === "deleted" ||
+                          message.kept === true ||
+                          (keepState.status === "keeping" &&
+                            keepState.messageId === message._id)
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleKeepMessage(message._id);
+                        }}
+                        title="Keep message"
+                        type="button"
+                      >
+                        <Save aria-hidden="true" size={15} strokeWidth={2.3} />
+                      </button>
+                      <button
+                        aria-label="Delete message"
+                        className="icon-action message-row-action message-delete-action"
+                        disabled={
+                          folder === "deleted" ||
+                          (deleteState.status === "deleting" &&
+                            deleteState.messageId === message._id)
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDeleteMessage(message._id);
+                        }}
+                        title="Delete message"
+                        type="button"
+                      >
+                        <Trash2
+                          aria-hidden="true"
+                          size={15}
+                          strokeWidth={2.3}
+                        />
+                      </button>
+                    </span>
                   </span>
-                  <span className="message-row-actions">
-                    <button
-                      aria-label="Archive message"
-                      className="icon-action message-row-action message-archive-action"
-                      disabled={
-                        folder === "deleted" ||
-                        message.archived === true ||
-                        (archiveState.status === "archiving" &&
-                          archiveState.messageId === message._id)
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleArchiveMessage(message._id);
-                      }}
-                      title="Archive message"
-                      type="button"
-                    >
-                      <Archive aria-hidden="true" size={15} strokeWidth={2.3} />
-                    </button>
-                    <button
-                      aria-label="Block sender and delete message"
-                      className="icon-action block-action message-row-action message-block-action"
-                      disabled={
-                        folder === "deleted" ||
-                        (blockState.status === "blocking" &&
-                          blockState.messageId === message._id)
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleBlockSender(message._id);
-                      }}
-                      title="Block sender and delete"
-                      type="button"
-                    >
-                      <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
-                    </button>
-                    <button
-                      aria-label="Move message to Keep"
-                      className="icon-action message-row-action message-keep-action"
-                      disabled={
-                        folder === "deleted" ||
-                        message.kept === true ||
-                        (keepState.status === "keeping" &&
-                          keepState.messageId === message._id)
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleKeepMessage(message._id);
-                      }}
-                      title="Keep message"
-                      type="button"
-                    >
-                      <Save aria-hidden="true" size={15} strokeWidth={2.3} />
-                    </button>
-                    <button
-                      aria-label="Delete message"
-                      className="icon-action message-row-action message-delete-action"
-                      disabled={
-                        folder === "deleted" ||
-                        (deleteState.status === "deleting" &&
-                          deleteState.messageId === message._id)
-                      }
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleDeleteMessage(message._id);
-                      }}
-                      title="Delete message"
-                      type="button"
-                    >
-                      <Trash2 aria-hidden="true" size={15} strokeWidth={2.3} />
-                    </button>
+                  <span className="message-subject">{message.subject}</span>
+                  <span className="message-meta">
+                    {formatDate(message.receivedAt)}
+                    {message.attachmentCount > 0
+                      ? ` · ${message.attachmentCount} attachment${
+                          message.attachmentCount === 1 ? "" : "s"
+                        }`
+                      : ""}
                   </span>
-                </span>
-                <span className="message-subject">{message.subject}</span>
-                <span className="message-meta">
-                  {formatDate(message.receivedAt)}
-                  {message.attachmentCount > 0
-                    ? ` · ${message.attachmentCount} attachment${
-                        message.attachmentCount === 1 ? "" : "s"
-                      }`
-                    : ""}
-                </span>
+                </div>
               </div>
             ))
           )}
@@ -2668,7 +2897,9 @@ function ReplyScreen({
         prompt: prompt.trim(),
       });
       setText(reply.text);
-      setHtml(escapeHtml(normalizeLineEndings(reply.text)).replace(/\n/g, "<br>"));
+      setHtml(
+        escapeHtml(normalizeLineEndings(reply.text)).replace(/\n/g, "<br>"),
+      );
       setInlineImages([]);
       resetSendState();
       setPromptState({ status: "idle" });
