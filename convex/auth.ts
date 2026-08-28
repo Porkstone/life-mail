@@ -7,10 +7,19 @@ import {
   query,
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
+import { SHOO_ISSUER } from "./authShared";
 
 type UserDoc = Doc<"users">;
 
 const AVLEC_DOMAIN = "avlec.co";
+
+// Users were originally keyed by Shoo's tokenIdentifier (`https://shoo.dev|<pairwise_sub>`).
+// The self-issued session JWTs (see convex/http.ts) reuse Shoo's pairwise subject with a
+// different issuer, so derive the stable key from the subject instead of trusting
+// identity.tokenIdentifier directly. For Shoo-issued tokens the two are identical.
+export function stableTokenIdentifier(identity: { subject: string }) {
+  return `${SHOO_ISSUER}|${identity.subject}`;
+}
 
 export const ensureCurrentUser = mutation({
   args: {},
@@ -27,14 +36,15 @@ export const viewer = query({
       return null;
     }
 
-    const user = await getUserByTokenIdentifier(ctx, identity.tokenIdentifier);
+    const tokenIdentifier = stableTokenIdentifier(identity);
+    const user = await getUserByTokenIdentifier(ctx, tokenIdentifier);
     if (user === null) {
       return {
         user: null,
         identity: {
           email: identity.email ?? null,
           name: identity.name ?? null,
-          tokenIdentifier: identity.tokenIdentifier,
+          tokenIdentifier,
         },
         addresses: [],
         isAdmin: false,
@@ -51,7 +61,7 @@ export const viewer = query({
       identity: {
         email: identity.email ?? null,
         name: identity.name ?? null,
-        tokenIdentifier: identity.tokenIdentifier,
+        tokenIdentifier,
       },
       addresses,
       isAdmin: user.admin,
@@ -128,7 +138,10 @@ export async function requireUser(ctx: QueryCtx | MutationCtx) {
     throw new Error("Not authenticated");
   }
 
-  const user = await getUserByTokenIdentifier(ctx, identity.tokenIdentifier);
+  const user = await getUserByTokenIdentifier(
+    ctx,
+    stableTokenIdentifier(identity),
+  );
   if (user === null) {
     throw new Error("User not registered");
   }
@@ -142,7 +155,8 @@ async function ensureUser(ctx: MutationCtx) {
     throw new Error("Not authenticated");
   }
 
-  const existing = await getUserByTokenIdentifier(ctx, identity.tokenIdentifier);
+  const tokenIdentifier = stableTokenIdentifier(identity);
+  const existing = await getUserByTokenIdentifier(ctx, tokenIdentifier);
   const normalizedEmail = tryNormalizeEmail(identity.email);
   const canLinkByEmail =
     normalizedEmail !== undefined && isEmailSafeForAccountLinking(identity);
@@ -161,7 +175,7 @@ async function ensureUser(ctx: MutationCtx) {
           throw new Error("Unable to merge duplicate users");
         }
         await ctx.db.patch("users", canonical._id, {
-          tokenIdentifier: identity.tokenIdentifier,
+          tokenIdentifier,
           email: normalizedEmail,
           ...(identity.name !== undefined ? { name: identity.name } : {}),
           lastSeenAt: Date.now(),
@@ -186,7 +200,7 @@ async function ensureUser(ctx: MutationCtx) {
     const userRow = await getUserLinkedToNormalizedEmail(ctx, normalizedEmail);
     if (userRow !== null) {
       await ctx.db.patch("users", userRow._id, {
-        tokenIdentifier: identity.tokenIdentifier,
+        tokenIdentifier,
         email: normalizedEmail,
         ...(identity.name !== undefined ? { name: identity.name } : {}),
         lastSeenAt: Date.now(),
@@ -198,7 +212,7 @@ async function ensureUser(ctx: MutationCtx) {
 
   const existingUsers = await ctx.db.query("users").take(100);
   const userId = await ctx.db.insert("users", {
-    tokenIdentifier: identity.tokenIdentifier,
+    tokenIdentifier,
     admin:
       existingUsers.length === 0 ||
       existingUsers.every((user) => user.tokenIdentifier === undefined),

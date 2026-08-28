@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireAdmin, requireUser } from "./auth";
+import { requireAdmin, requireUser, stableTokenIdentifier } from "./auth";
 import {
   action,
   type ActionCtx,
@@ -1415,7 +1415,9 @@ async function requireActionIdentity(ctx: ActionCtx) {
     throw new Error("Not authenticated");
   }
 
-  return identity;
+  // Users are keyed by the Shoo-era token identifier; self-issued session JWTs
+  // reuse the same subject, so rebuild the stable key (see convex/auth.ts).
+  return { ...identity, tokenIdentifier: stableTokenIdentifier(identity) };
 }
 
 async function generateOpenRouterReply(

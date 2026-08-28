@@ -2,19 +2,40 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createShooAuth, decodeIdentityClaims } from "@shoojs/react";
 import type { StartSignInOptions } from "@shoojs/react";
 
+// Shoo id_tokens only live 5 minutes and can only be renewed with a full-page
+// redirect to shoo.dev, which made the app reload every few minutes. Instead,
+// the Shoo token is exchanged once (at sign-in) for a session issued by our
+// Convex backend: a 1-hour access token plus a 30-day refresh token that is
+// renewed silently over fetch — no page navigation. See convex/http.ts.
+
 const MANUAL_SIGN_OUT_KEY = "shoo_manual_sign_out";
 const AUTH_ATTEMPT_STORAGE_KEY = "shoo_auth_attempted_at";
 const AUTH_ATTEMPT_COOLDOWN_MS = 75_000;
-const REFRESH_LEEWAY_MS = 30_000;
-const SESSION_MONITOR_INTERVAL_MS = 60_000;
+const SESSION_STORAGE_KEY = "life-mail_session";
+const ACCESS_TOKEN_REFRESH_LEEWAY_MS = 120_000;
 
 const shoo = createShooAuth({
   callbackPath: "/shoo/callback",
   requestPii: true,
 });
 
+type StoredSession = {
+  accessToken: string;
+  accessTokenExpiresAt: number;
+  refreshToken: string;
+};
+
 let reauthInFlight: Promise<void> | null = null;
 let callbackInFlight: Promise<void> | null = null;
+let refreshInFlight: Promise<StoredSession | null> | null = null;
+
+function convexSiteUrl() {
+  const override = import.meta.env.VITE_CONVEX_SITE_URL as string | undefined;
+  if (override !== undefined) return override;
+
+  const cloudUrl = import.meta.env.VITE_CONVEX_URL as string;
+  return cloudUrl.replace(/\.convex\.cloud$/, ".convex.site");
+}
 
 function currentRoute() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -45,45 +66,122 @@ function markAuthAttempt() {
   window.sessionStorage.setItem(AUTH_ATTEMPT_STORAGE_KEY, String(Date.now()));
 }
 
-function readStoredTokenState() {
+function readSession(): StoredSession | null {
+  const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+  if (raw === null) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredSession>;
+    if (
+      typeof parsed.accessToken !== "string" ||
+      typeof parsed.accessTokenExpiresAt !== "number" ||
+      typeof parsed.refreshToken !== "string"
+    )
+      return null;
+
+    return {
+      accessToken: parsed.accessToken,
+      accessTokenExpiresAt: parsed.accessTokenExpiresAt,
+      refreshToken: parsed.refreshToken,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeSession(session: StoredSession) {
+  window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function clearSession() {
+  window.localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function readValidShooToken() {
   const identity = shoo.getIdentity();
-  const token = identity.token ?? null;
-  const claims = token === null ? null : decodeIdentityClaims(token);
+  if (identity.userId === null || identity.token === undefined) return null;
 
-  return {
-    token,
-    userId: identity.userId,
-    expiresAtMs: typeof claims?.exp === "number" ? claims.exp * 1000 : null,
+  const claims = decodeIdentityClaims(identity.token);
+  if (typeof claims?.exp !== "number" || claims.exp * 1000 <= Date.now())
+    return null;
+
+  return identity.token;
+}
+
+async function exchangeShooTokenForSession(idToken: string) {
+  const response = await fetch(`${convexSiteUrl()}/auth/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idToken }),
+  });
+  if (!response.ok) return null;
+
+  const data = (await response.json()) as {
+    accessToken: string;
+    expiresInSeconds: number;
+    refreshToken: string;
   };
+
+  const session: StoredSession = {
+    accessToken: data.accessToken,
+    accessTokenExpiresAt: Date.now() + data.expiresInSeconds * 1000,
+    refreshToken: data.refreshToken,
+  };
+  writeSession(session);
+  return session;
 }
 
-function hasExpired(expiresAtMs: number | null) {
-  return expiresAtMs !== null && expiresAtMs <= Date.now();
+// Returns the refreshed session, the existing session on transient network
+// errors (so Convex can retry), or null when the session is truly dead.
+async function refreshSessionOnce(session: StoredSession) {
+  if (refreshInFlight !== null) return refreshInFlight;
+
+  const promise = (async () => {
+    let response: Response;
+    try {
+      response = await fetch(`${convexSiteUrl()}/auth/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refreshToken: session.refreshToken }),
+      });
+    } catch {
+      return session;
+    }
+
+    if (response.status === 401) {
+      clearSession();
+      return null;
+    }
+    if (!response.ok) return session;
+
+    const data = (await response.json()) as {
+      accessToken: string;
+      expiresInSeconds: number;
+    };
+    const refreshed: StoredSession = {
+      accessToken: data.accessToken,
+      accessTokenExpiresAt: Date.now() + data.expiresInSeconds * 1000,
+      refreshToken: session.refreshToken,
+    };
+    writeSession(refreshed);
+    return refreshed;
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+
+  refreshInFlight = promise;
+  return promise;
 }
 
-function expiresSoon(expiresAtMs: number | null) {
-  return expiresAtMs !== null && expiresAtMs - Date.now() <= REFRESH_LEEWAY_MS;
-}
+function beginReauth() {
+  if (hasManualSignOut() || hasRecentAuthAttempt()) return Promise.resolve();
 
-function beginReauth({
-  onStarted,
-}: {
-  onStarted?: () => void;
-} = {}) {
-  if (hasManualSignOut() || hasRecentAuthAttempt()) {
-    return Promise.resolve();
-  }
+  if (reauthInFlight !== null) return reauthInFlight;
 
-  if (reauthInFlight !== null) {
-    return reauthInFlight;
-  }
-
-  onStarted?.();
   markAuthAttempt();
-
   const promise = shoo
     .startSignIn({
-      requestPii: false,
+      requestPii: true,
       returnTo: currentRoute(),
     })
     .then(() => undefined)
@@ -95,13 +193,9 @@ function beginReauth({
 }
 
 function handleCallbackOnce() {
-  if (!isCallbackRoute()) {
-    return Promise.resolve();
-  }
+  if (!isCallbackRoute()) return Promise.resolve();
 
-  if (callbackInFlight !== null) {
-    return callbackInFlight;
-  }
+  if (callbackInFlight !== null) return callbackInFlight;
 
   const promise = shoo
     .handleCallback()
@@ -115,144 +209,83 @@ function handleCallbackOnce() {
 
 export function useAuth() {
   const [isLoading, setIsLoading] = useState(true);
-  const [isReauthing, setIsReauthing] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    const state = readStoredTokenState();
-    return (
-      state.userId !== null &&
-      state.token !== null &&
-      !hasExpired(state.expiresAtMs)
-    );
-  });
-  const ran = useRef(false);
-  const sessionMonitor = useRef<ReturnType<typeof shoo.startSessionMonitor> | null>(
-    null,
+  const [isAuthenticated, setIsAuthenticated] = useState(
+    () => readSession() !== null,
   );
-
-  const stopSessionMonitor = useCallback(() => {
-    sessionMonitor.current?.stop();
-    sessionMonitor.current = null;
-  }, []);
-
-  const startSessionMonitor = useCallback(() => {
-    if (sessionMonitor.current !== null) {
-      return;
-    }
-
-    sessionMonitor.current = shoo.startSessionMonitor({
-      intervalMs: SESSION_MONITOR_INTERVAL_MS,
-      immediate: true,
-      onLoginRequired: () => {
-        stopSessionMonitor();
-        if (hasManualSignOut()) {
-          shoo.clearIdentity();
-          setIsAuthenticated(false);
-          return;
-        }
-
-        void beginReauth({
-          onStarted: () => setIsReauthing(true),
-        }).catch(() => {
-          shoo.clearIdentity();
-          setIsAuthenticated(false);
-          setIsReauthing(false);
-        });
-      },
-      onError: () => {
-        // Keep local state and let the next monitor tick retry.
-      },
-    });
-  }, [stopSessionMonitor]);
+  const ran = useRef(false);
 
   useEffect(() => {
-    if (ran.current) {
-      return;
-    }
+    if (ran.current) return;
     ran.current = true;
 
-    void handleCallbackOnce()
-      .catch((error: unknown) => {
+    const initialize = async () => {
+      try {
+        await handleCallbackOnce();
+      } catch (error: unknown) {
         console.error("Shoo callback failed", error);
         if (isCallbackRoute()) {
           window.location.replace("/");
+          return;
         }
-      })
-      .finally(() => {
-      const state = readStoredTokenState();
-      const authenticated =
-        state.userId !== null &&
-        state.token !== null &&
-        !hasExpired(state.expiresAtMs);
+      }
 
-      if (!authenticated && state.token !== null) {
-        shoo.clearIdentity();
+      // handleCallback navigates away via location.replace; the session
+      // exchange happens on the destination page's load instead.
+      if (isCallbackRoute()) return;
+
+      let session = readSession();
+      if (session === null) {
+        const shooToken = readValidShooToken();
+        if (shooToken !== null) {
+          session = await exchangeShooTokenForSession(shooToken);
+          // The Shoo token is single-purpose now; the session is the source
+          // of truth from here on.
+          if (session !== null) shoo.clearIdentity();
+        }
       }
-      if (authenticated) {
-        startSessionMonitor();
-      } else {
-        stopSessionMonitor();
-      }
-      setIsAuthenticated(authenticated);
+
+      setIsAuthenticated(session !== null);
       setIsLoading(false);
-      });
-  }, [startSessionMonitor, stopSessionMonitor]);
-
-  useEffect(() => {
-    if (isLoading || isAuthenticated || isCallbackRoute() || hasManualSignOut()) {
-      return;
-    }
-
-    void beginReauth({
-      onStarted: () => setIsReauthing(true),
-    }).catch(() => setIsReauthing(false));
-  }, [isAuthenticated, isLoading]);
-
-  useEffect(() => {
-    return () => {
-      stopSessionMonitor();
     };
-  }, [stopSessionMonitor]);
+
+    void initialize();
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || isAuthenticated || isCallbackRoute() || hasManualSignOut())
+      return;
+
+    void beginReauth();
+  }, [isAuthenticated, isLoading]);
 
   const fetchAccessToken = useCallback(
     async (opts: { forceRefreshToken: boolean }) => {
-      const state = readStoredTokenState();
-      if (state.token === null || state.userId === null) {
-        stopSessionMonitor();
+      const session = readSession();
+      if (session === null) {
         setIsAuthenticated(false);
         return null;
       }
 
-      if (hasExpired(state.expiresAtMs)) {
-        stopSessionMonitor();
-        shoo.clearIdentity();
+      const expiresSoon =
+        session.accessTokenExpiresAt - Date.now() <=
+        ACCESS_TOKEN_REFRESH_LEEWAY_MS;
+      if (!opts.forceRefreshToken && !expiresSoon) return session.accessToken;
+
+      const refreshed = await refreshSessionOnce(session);
+      if (refreshed === null) {
         setIsAuthenticated(false);
-        if (!hasManualSignOut()) {
-          void beginReauth({
-            onStarted: () => setIsReauthing(true),
-          }).catch(() => setIsReauthing(false));
-        }
+        if (!hasManualSignOut()) void beginReauth();
         return null;
       }
 
-      setIsAuthenticated(true);
-      startSessionMonitor();
-
-      if (opts.forceRefreshToken && expiresSoon(state.expiresAtMs)) {
-        void beginReauth({
-          onStarted: () => setIsReauthing(true),
-        }).catch(() => setIsReauthing(false));
-      }
-
-      return state.token;
+      return refreshed.accessToken;
     },
-    [startSessionMonitor, stopSessionMonitor],
+    [],
   );
 
   return {
     isLoading,
     isAuthenticated,
-    isReauthing,
-    needsManualSignIn: hasManualSignOut(),
     fetchAccessToken,
   };
 }
@@ -260,11 +293,22 @@ export function useAuth() {
 export async function signIn(opts?: StartSignInOptions) {
   window.sessionStorage.removeItem(MANUAL_SIGN_OUT_KEY);
   window.sessionStorage.removeItem(AUTH_ATTEMPT_STORAGE_KEY);
-  await shoo.startSignIn(opts);
+  await shoo.startSignIn({ requestPii: true, ...opts });
 }
 
 export function signOut() {
+  const session = readSession();
+  if (session !== null) {
+    void fetch(`${convexSiteUrl()}/auth/signout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: session.refreshToken }),
+      keepalive: true,
+    }).catch(() => undefined);
+  }
+
   window.sessionStorage.setItem(MANUAL_SIGN_OUT_KEY, "1");
+  clearSession();
   shoo.clearIdentity();
   window.location.reload();
 }

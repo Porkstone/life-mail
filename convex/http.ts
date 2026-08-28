@@ -1,6 +1,14 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import { allowedAppOrigins } from "./authShared";
+import {
+  generateRefreshToken,
+  hashRefreshToken,
+  mintSessionToken,
+  publicJwks,
+  verifyShooToken,
+} from "./authTokens";
 
 type ResendReceivedEmailEvent = {
   type: "email.received";
@@ -140,6 +148,136 @@ http.route({
     });
 
     return json({ ok: true });
+  }),
+});
+
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("origin");
+  if (origin === null || !allowedAppOrigins().includes(origin)) return {};
+
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+    "access-control-max-age": "86400",
+    vary: "origin",
+  };
+}
+
+function corsJson(req: Request, body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...corsHeaders(req) },
+  });
+}
+
+const authPreflight = httpAction(async (_ctx, req) => {
+  return new Response(null, { status: 204, headers: corsHeaders(req) });
+});
+
+async function readJsonBody(req: Request) {
+  try {
+    return (await req.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+http.route({
+  path: "/.well-known/jwks.json",
+  method: "GET",
+  handler: httpAction(async () => {
+    return new Response(JSON.stringify(publicJwks()), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=600",
+      },
+    });
+  }),
+});
+
+for (const path of ["/auth/session", "/auth/refresh", "/auth/signout"]) {
+  http.route({ path, method: "OPTIONS", handler: authPreflight });
+}
+
+http.route({
+  path: "/auth/session",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const body = await readJsonBody(req);
+    const idToken = body?.idToken;
+    if (typeof idToken !== "string") {
+      return corsJson(req, { error: "Missing idToken" }, 400);
+    }
+
+    let claims;
+    try {
+      claims = await verifyShooToken(idToken);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Token verification failed";
+      return corsJson(req, { error: message }, 401);
+    }
+
+    const refreshToken = generateRefreshToken();
+    await ctx.runMutation(internal.authSessions.create, {
+      refreshTokenHash: await hashRefreshToken(refreshToken),
+      subject: claims.subject,
+      ...(claims.email !== undefined ? { email: claims.email } : {}),
+      ...(claims.emailVerified !== undefined
+        ? { emailVerified: claims.emailVerified }
+        : {}),
+      ...(claims.name !== undefined ? { name: claims.name } : {}),
+    });
+
+    const minted = await mintSessionToken(claims);
+    return corsJson(req, {
+      accessToken: minted.token,
+      expiresInSeconds: minted.expiresInSeconds,
+      refreshToken,
+    });
+  }),
+});
+
+http.route({
+  path: "/auth/refresh",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const body = await readJsonBody(req);
+    const refreshToken = body?.refreshToken;
+    if (typeof refreshToken !== "string") {
+      return corsJson(req, { error: "Missing refreshToken" }, 400);
+    }
+
+    const claims = await ctx.runMutation(internal.authSessions.refresh, {
+      refreshTokenHash: await hashRefreshToken(refreshToken),
+    });
+    if (claims === null) {
+      return corsJson(req, { error: "Session expired" }, 401);
+    }
+
+    const minted = await mintSessionToken(claims);
+    return corsJson(req, {
+      accessToken: minted.token,
+      expiresInSeconds: minted.expiresInSeconds,
+    });
+  }),
+});
+
+http.route({
+  path: "/auth/signout",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const body = await readJsonBody(req);
+    const refreshToken = body?.refreshToken;
+    if (typeof refreshToken === "string") {
+      await ctx.runMutation(internal.authSessions.remove, {
+        refreshTokenHash: await hashRefreshToken(refreshToken),
+      });
+    }
+
+    return corsJson(req, { ok: true });
   }),
 });
 

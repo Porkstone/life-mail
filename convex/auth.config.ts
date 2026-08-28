@@ -1,38 +1,39 @@
 import type { AuthConfig } from "convex/server";
+import {
+  SESSION_JWT_AUDIENCE,
+  SHOO_ISSUER,
+  SHOO_JWKS_URL,
+  shooJwtAudiences,
+} from "./authShared";
 
 // Shoo uses a pairwise subject per origin (see https://docs.shoo.dev — "Pairwise subject").
 // JWT `aud` is the redirect origin (e.g. `origin:http://localhost:5174`). Convex needs one
 // customJwt provider per distinct audience you accept.
 //
-// Add every origin you serve (production, previews) to the defaults below or
+// Add every origin you serve (production, previews) to the defaults in authShared.ts or
 // the comma-separated `EXTRA_SHOO_JWT_AUDIENCES` environment variable.
 // Each value must match Shoo’s `aud` claim exactly (usually `origin:` + your site origin).
+//
+// Shoo tokens are only used to establish a session; day-to-day Convex requests use
+// self-issued session JWTs minted by the /auth/* HTTP actions (see convex/http.ts),
+// which are refreshed silently without any page navigation.
 
-const SHOO_ISSUER = "https://shoo.dev";
-const SHOO_JWKS = "https://shoo.dev/.well-known/jwks.json";
+const shooProviders = shooJwtAudiences().map((applicationID) => ({
+  type: "customJwt" as const,
+  issuer: SHOO_ISSUER,
+  jwks: SHOO_JWKS_URL,
+  algorithm: "ES256" as const,
+  applicationID,
+}));
 
-const DEFAULT_AUDIENCES = [
-  "origin:http://localhost:5174",
-  "origin:https://life-mail.vercel.app",
-] as const;
-
-function extraShooJwtAudiences() {
-  return (process.env.EXTRA_SHOO_JWT_AUDIENCES ?? "")
-    .split(",")
-    .map((audience) => audience.trim())
-    .filter((audience) => audience.length > 0);
-}
-
-function shooJwtAudiences() {
-  return [...new Set([...DEFAULT_AUDIENCES, ...extraShooJwtAudiences()])];
-}
+const sessionProvider = {
+  type: "customJwt" as const,
+  issuer: process.env.CONVEX_SITE_URL ?? "",
+  jwks: `${process.env.CONVEX_SITE_URL ?? ""}/.well-known/jwks.json`,
+  algorithm: "ES256" as const,
+  applicationID: SESSION_JWT_AUDIENCE,
+};
 
 export default {
-  providers: shooJwtAudiences().map((applicationID) => ({
-    type: "customJwt" as const,
-    issuer: SHOO_ISSUER,
-    jwks: SHOO_JWKS,
-    algorithm: "ES256" as const,
-    applicationID,
-  })),
+  providers: [...shooProviders, sessionProvider],
 } satisfies AuthConfig;

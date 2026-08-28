@@ -2,6 +2,17 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  authSessions: defineTable({
+    refreshTokenHash: v.string(),
+    subject: v.string(),
+    email: v.optional(v.string()),
+    emailVerified: v.optional(v.boolean()),
+    name: v.optional(v.string()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    lastUsedAt: v.number(),
+  }).index("by_refreshTokenHash", ["refreshTokenHash"]),
+
   users: defineTable({
     tokenIdentifier: v.optional(v.string()),
     admin: v.boolean(),
