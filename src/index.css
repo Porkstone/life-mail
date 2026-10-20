@@ -1480,6 +1480,37 @@ dd {
   margin: 18px 0 14px;
 }
 
+.whitelist-form {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.whitelist-form label {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.whitelist-form-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.whitelist-form-controls input {
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
+}
+
+.settings-panel .whitelist-error {
+  color: #a4262c;
+}
+
+.whitelist-load-more {
+  margin-top: 14px;
+}
+
 .blocked-sender-list {
   display: grid;
   gap: 8px;
@@ -1765,8 +1796,9 @@ dd {
     right: 0;
     bottom: 0;
     display: grid;
-    width: 216px;
-    grid-template-columns: repeat(3, 72px);
+    width: var(--swipe-actions-width, 216px);
+    grid-auto-flow: column;
+    grid-auto-columns: 72px;
   }
 
   .swipe-message-action {

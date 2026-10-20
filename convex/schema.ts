@@ -161,6 +161,11 @@ export default defineSchema({
       "occurredAt",
     ]),
 
+  whitelistedSenders: defineTable({
+    address: v.string(),
+    addedAt: v.number(),
+  }).index("by_address", ["address"]),
+
   blockedSenders: defineTable({
     address: v.string(),
     blockedAt: v.number(),

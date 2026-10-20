@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin, requireUser, stableTokenIdentifier } from "./auth";
@@ -94,9 +95,12 @@ export const listReceived = query({
       }
     }
 
-    return messages
-      .sort((left, right) => right.receivedAt - left.receivedAt)
-      .slice(0, limit);
+    return await withWhitelistStatus(
+      ctx,
+      messages
+        .sort((left, right) => right.receivedAt - left.receivedAt)
+        .slice(0, limit),
+    );
   },
 });
 
@@ -184,7 +188,7 @@ export const listKeptReceived = query({
       }
     }
 
-    return messages;
+    return await withWhitelistStatus(ctx, messages);
   },
 });
 
@@ -255,7 +259,10 @@ export const listDeletedReceived = query({
     const sortedMessages = messages.sort(
       (left, right) => (right.deletedOn ?? 0) - (left.deletedOn ?? 0),
     );
-    return limit === null ? sortedMessages : sortedMessages.slice(0, limit);
+    return await withWhitelistStatus(
+      ctx,
+      limit === null ? sortedMessages : sortedMessages.slice(0, limit),
+    );
   },
 });
 
@@ -331,6 +338,7 @@ export const getLastPreviousReceivedFromSender = query({
 
 export const blockSenderAndDelete = mutation({
   args: { messageId: v.id("receivedMessages") },
+  returns: v.union(v.null(), v.object({ address: v.string() })),
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     await requireMessageAccess(ctx, user._id, args.messageId);
@@ -340,6 +348,9 @@ export const blockSenderAndDelete = mutation({
     }
 
     const address = normalizeSenderAddress(message.from);
+    if (await isSenderWhitelisted(ctx, address)) {
+      throw new Error("Whitelisted senders cannot be blocked.");
+    }
     if (address.length > 0) {
       const existingBlock = await ctx.db
         .query("blockedSenders")
@@ -426,6 +437,71 @@ export const removeBlockedSender = mutation({
   handler: async (ctx, args) => {
     await requireUser(ctx);
     await ctx.db.delete("blockedSenders", args.blockedSenderId);
+    return null;
+  },
+});
+
+const whitelistedSenderValidator = v.object({
+  _id: v.id("whitelistedSenders"),
+  _creationTime: v.number(),
+  address: v.string(),
+  addedAt: v.number(),
+});
+
+export const listWhitelistedSenders = query({
+  args: { paginationOpts: paginationOptsValidator },
+  returns: v.object({
+    page: v.array(whitelistedSenderValidator),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("whitelistedSenders")
+      .withIndex("by_address")
+      .paginate(args.paginationOpts);
+    return { page, isDone, continueCursor };
+  },
+});
+
+export const addWhitelistedSender = mutation({
+  args: { address: v.string() },
+  returns: v.id("whitelistedSenders"),
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const address = normalizeSenderAddress(args.address);
+    if (!/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(address)) {
+      throw new Error("Enter a valid email address.");
+    }
+
+    const existing = await ctx.db
+      .query("whitelistedSenders")
+      .withIndex("by_address", (q) => q.eq("address", address))
+      .unique();
+    const existingBlock = await ctx.db
+      .query("blockedSenders")
+      .withIndex("by_address", (q) => q.eq("address", address))
+      .unique();
+    if (existingBlock !== null) {
+      await ctx.db.delete("blockedSenders", existingBlock._id);
+    }
+    return (
+      existing?._id ??
+      (await ctx.db.insert("whitelistedSenders", {
+        address,
+        addedAt: Date.now(),
+      }))
+    );
+  },
+});
+
+export const removeWhitelistedSender = mutation({
+  args: { whitelistedSenderId: v.id("whitelistedSenders") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    await ctx.db.delete("whitelistedSenders", args.whitelistedSenderId);
     return null;
   },
 });
@@ -1054,7 +1130,8 @@ export const storeResendReceivedEmail = internalMutation({
 
     const senderAddress = normalizeSenderAddress(args.data.from);
     const blockedSender =
-      senderAddress.length === 0
+      senderAddress.length === 0 ||
+      (await isSenderWhitelisted(ctx, senderAddress))
         ? null
         : await ctx.db
             .query("blockedSenders")
@@ -1186,6 +1263,35 @@ function toSentMessageListItem(message: Doc<"sentMessages">) {
     resendEmailId: message.resendEmailId,
     isReply: message.originalMessageId !== undefined,
   };
+}
+
+async function isSenderWhitelisted(
+  ctx: QueryCtx | MutationCtx,
+  address: string,
+) {
+  return (
+    (await ctx.db
+      .query("whitelistedSenders")
+      .withIndex("by_address", (q) => q.eq("address", address))
+      .unique()) !== null
+  );
+}
+
+async function withWhitelistStatus(
+  ctx: QueryCtx,
+  messages: Doc<"receivedMessages">[],
+) {
+  const statuses = new Map<string, boolean>();
+  for (const message of messages) {
+    const address = normalizeSenderAddress(message.from);
+    if (!statuses.has(address)) {
+      statuses.set(address, await isSenderWhitelisted(ctx, address));
+    }
+  }
+  return messages.map((message) => ({
+    ...message,
+    isWhitelisted: statuses.get(normalizeSenderAddress(message.from)) === true,
+  }));
 }
 
 function normalizeSenderAddress(from: string) {

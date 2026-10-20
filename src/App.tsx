@@ -8,7 +8,13 @@ import type {
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
-import { useAction, useConvexAuth, useMutation, useQuery } from "convex/react";
+import {
+  useAction,
+  useConvexAuth,
+  useMutation,
+  usePaginatedQuery,
+  useQuery,
+} from "convex/react";
 import {
   Archive,
   ArrowLeft,
@@ -574,6 +580,13 @@ function MailScreen() {
     setMessageSwipe({ messageId: null, offset: 0, dragging: false });
   }
 
+  function getSwipeActionWidth(messageId: Id<"receivedMessages">) {
+    return filteredMessages.find((message) => message._id === messageId)
+      ?.isWhitelisted
+      ? MOBILE_SWIPE_ACTION_WIDTH - 72
+      : MOBILE_SWIPE_ACTION_WIDTH;
+  }
+
   function handleMessagePointerDown(
     event: ReactPointerEvent<HTMLDivElement>,
     messageId: Id<"receivedMessages">,
@@ -629,7 +642,7 @@ function MailScreen() {
 
     event.preventDefault();
     const offset = Math.max(
-      -MOBILE_SWIPE_ACTION_WIDTH,
+      -getSwipeActionWidth(messageId),
       Math.min(0, gesture.startingOffset + deltaX),
     );
     setMessageSwipe({ messageId, offset, dragging: true });
@@ -650,12 +663,12 @@ function MailScreen() {
 
     const deltaX = event.clientX - gesture.startX;
     const finalOffset = Math.max(
-      -MOBILE_SWIPE_ACTION_WIDTH,
+      -getSwipeActionWidth(messageId),
       Math.min(0, gesture.startingOffset + deltaX),
     );
     const shouldOpen =
       gesture.axis === "horizontal" &&
-      (finalOffset <= -MOBILE_SWIPE_ACTION_WIDTH * 0.35 || deltaX < -48);
+      (finalOffset <= -getSwipeActionWidth(messageId) * 0.35 || deltaX < -48);
     if (gesture.axis === "horizontal" || gesture.startingOffset < 0) {
       suppressMessageOpen.current = messageId;
     }
@@ -664,7 +677,7 @@ function MailScreen() {
       shouldOpen
         ? {
             messageId,
-            offset: -MOBILE_SWIPE_ACTION_WIDTH,
+            offset: -getSwipeActionWidth(messageId),
             dragging: false,
           }
         : { messageId: null, offset: 0, dragging: false },
@@ -933,14 +946,22 @@ function MailScreen() {
             />
           ) : (
             filteredMessages.map((message) => (
-              <div className="swipe-message-row" key={message._id}>
+              <div
+                className="swipe-message-row"
+                key={message._id}
+                style={
+                  {
+                    "--swipe-actions-width": `${getSwipeActionWidth(message._id)}px`,
+                  } as CSSProperties
+                }
+              >
                 <div
                   className="swipe-message-actions"
                   aria-label="Message actions"
                   onFocus={() =>
                     setMessageSwipe({
                       messageId: message._id,
-                      offset: -MOBILE_SWIPE_ACTION_WIDTH,
+                      offset: -getSwipeActionWidth(message._id),
                       dragging: false,
                     })
                   }
@@ -978,22 +999,24 @@ function MailScreen() {
                     <Trash2 aria-hidden="true" size={20} strokeWidth={2.2} />
                     <span>Delete</span>
                   </button>
-                  <button
-                    aria-label="Block sender and delete message"
-                    className="swipe-message-action swipe-block-action"
-                    disabled={
-                      blockState.status === "blocking" &&
-                      blockState.messageId === message._id
-                    }
-                    onClick={() => {
-                      closeMessageSwipe();
-                      void handleBlockSender(message._id);
-                    }}
-                    type="button"
-                  >
-                    <Ban aria-hidden="true" size={20} strokeWidth={2.2} />
-                    <span>Block</span>
-                  </button>
+                  {!message.isWhitelisted && (
+                    <button
+                      aria-label="Block sender and delete message"
+                      className="swipe-message-action swipe-block-action"
+                      disabled={
+                        blockState.status === "blocking" &&
+                        blockState.messageId === message._id
+                      }
+                      onClick={() => {
+                        closeMessageSwipe();
+                        void handleBlockSender(message._id);
+                      }}
+                      type="button"
+                    >
+                      <Ban aria-hidden="true" size={20} strokeWidth={2.2} />
+                      <span>Block</span>
+                    </button>
+                  )}
                 </div>
                 <div
                   aria-label={`${displaySender(message.from)}, ${message.subject}. Swipe left for actions.`}
@@ -1068,23 +1091,25 @@ function MailScreen() {
                           strokeWidth={2.3}
                         />
                       </button>
-                      <button
-                        aria-label="Block sender and delete message"
-                        className="icon-action block-action message-row-action message-block-action"
-                        disabled={
-                          folder === "deleted" ||
-                          (blockState.status === "blocking" &&
-                            blockState.messageId === message._id)
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void handleBlockSender(message._id);
-                        }}
-                        title="Block sender and delete"
-                        type="button"
-                      >
-                        <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
-                      </button>
+                      {!message.isWhitelisted && (
+                        <button
+                          aria-label="Block sender and delete message"
+                          className="icon-action block-action message-row-action message-block-action"
+                          disabled={
+                            folder === "deleted" ||
+                            (blockState.status === "blocking" &&
+                              blockState.messageId === message._id)
+                          }
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleBlockSender(message._id);
+                          }}
+                          title="Block sender and delete"
+                          type="button"
+                        >
+                          <Ban aria-hidden="true" size={15} strokeWidth={2.3} />
+                        </button>
+                      )}
                       <button
                         aria-label="Move message to Keep"
                         className="icon-action message-row-action message-keep-action"
@@ -2256,6 +2281,144 @@ function ComposePane({
   );
 }
 
+function WhitelistSettings() {
+  const [address, setAddress] = useState("");
+  const [isAdding, setIsAdding] = useState(false);
+  const [removingId, setRemovingId] = useState<Id<"whitelistedSenders"> | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const addSender = useMutation(api.emails.addWhitelistedSender);
+  const removeSender = useMutation(api.emails.removeWhitelistedSender);
+  const {
+    results: senders,
+    status,
+    loadMore,
+  } = usePaginatedQuery(
+    api.emails.listWhitelistedSenders,
+    {},
+    { initialNumItems: 50 },
+  );
+
+  async function handleAdd(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsAdding(true);
+    setError(null);
+    try {
+      await addSender({ address });
+      setAddress("");
+    } catch (error: unknown) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Unable to whitelist this address.",
+      );
+    } finally {
+      setIsAdding(false);
+    }
+  }
+
+  async function handleRemove(whitelistedSenderId: Id<"whitelistedSenders">) {
+    setRemovingId(whitelistedSenderId);
+    setError(null);
+    try {
+      await removeSender({ whitelistedSenderId });
+    } catch (error: unknown) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Unable to remove this address.",
+      );
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  return (
+    <section className="settings-panel" aria-label="Whitelisted senders">
+      <p className="eyebrow">Mail rules</p>
+      <h2>Whitelist</h2>
+      <p>
+        Whitelisted email addresses cannot be blocked. Adding an address removes
+        any existing block. These rules apply to all mailboxes.
+      </p>
+      <form
+        className="whitelist-form"
+        onSubmit={(event) => {
+          void handleAdd(event);
+        }}
+      >
+        <label htmlFor="whitelist-address">Email address</label>
+        <div className="whitelist-form-controls">
+          <input
+            id="whitelist-address"
+            className="search-box"
+            type="email"
+            placeholder="sender@example.com"
+            value={address}
+            onChange={(event) => setAddress(event.target.value)}
+            disabled={isAdding}
+            required
+          />
+          <button
+            className="primary-action"
+            type="submit"
+            disabled={isAdding || address.trim().length === 0}
+          >
+            {isAdding ? "Adding..." : "Add to whitelist"}
+          </button>
+        </div>
+      </form>
+      {error !== null ? (
+        <p className="whitelist-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="blocked-sender-list">
+        {status === "LoadingFirstPage" ? (
+          <EmptyState
+            title="Loading whitelist"
+            detail="Waiting for Convex..."
+          />
+        ) : senders.length === 0 ? (
+          <EmptyState
+            title="No whitelisted senders"
+            detail="Add an email address to protect it from being blocked."
+          />
+        ) : (
+          senders.map((sender) => (
+            <div className="blocked-sender-row" key={sender._id}>
+              <span>{sender.address}</span>
+              <button
+                className="icon-action remove-blocked-sender-action"
+                aria-label={`Remove ${sender.address} from whitelist`}
+                title="Remove from whitelist"
+                type="button"
+                disabled={removingId !== null}
+                onClick={() => {
+                  void handleRemove(sender._id);
+                }}
+              >
+                <X aria-hidden="true" size={16} strokeWidth={2.2} />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      {status === "CanLoadMore" || status === "LoadingMore" ? (
+        <button
+          className="ghost-action whitelist-load-more"
+          type="button"
+          disabled={status === "LoadingMore"}
+          onClick={() => loadMore(50)}
+        >
+          {status === "LoadingMore" ? "Loading..." : "Load more"}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
 function SettingsScreen() {
   const navigate = useNavigate();
   const convexSiteUrl =
@@ -2327,6 +2490,8 @@ function SettingsScreen() {
           </div>
         </dl>
       </section>
+
+      <WhitelistSettings />
 
       <section className="settings-panel" aria-label="Blocked senders">
         <div className="settings-panel-header">

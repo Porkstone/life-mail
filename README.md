@@ -48,6 +48,19 @@ The browser auth wrapper in [`src/shoo.ts`](src/shoo.ts) follows Shoo's Convex a
 
 The wrapper also starts Shoo's background session monitor once a valid local identity is present. It polls Shoo immediately and then every 60 seconds using `startSessionMonitor`; if Shoo reports `login_required` because the token was revoked, expired, or invalid, the app clears local identity and marks the user signed out. Transient monitor errors are fail-open: local identity is kept and the next poll retries.
 
+## Sender whitelist
+
+Manage protected sender addresses under **Settings → Whitelist**. The whitelist
+is shared across all mailboxes, like blocked senders. Addresses are normalized
+to lowercase, and adding an address removes its existing block. Whitelisted
+senders cannot be blocked through either the UI or the API; their messages have
+no block icon, including in mobile swipe actions. Incoming messages from these
+senders bypass blocking. Existing deleted messages remain deleted, and messages
+can still be manually archived or deleted. Removing an address allows it to be
+blocked again.
+
+Run `pnpm test` for the whitelist regression tests.
+
 ## Learn more
 
 To learn more about developing your project with Convex, check out:
