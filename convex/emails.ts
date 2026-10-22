@@ -54,6 +54,22 @@ const sentMessageListItemValidator = v.object({
   isReply: v.boolean(),
 });
 
+const receivedMessageListItemValidator = v.object({
+  _id: v.id("receivedMessages"),
+  _creationTime: v.number(),
+  from: v.string(),
+  to: v.array(v.string()),
+  cc: v.array(v.string()),
+  subject: v.string(),
+  attachmentCount: v.number(),
+  receivedAt: v.number(),
+  resendEmailId: v.string(),
+  archived: v.optional(v.boolean()),
+  kept: v.optional(v.boolean()),
+  deletedOn: v.optional(v.number()),
+  isWhitelisted: v.boolean(),
+});
+
 const SETTINGS_KEY = "global";
 const OPENROUTER_MODEL = "openrouter/auto";
 const OLD_ARCHIVED_MESSAGE_AGE_MS = 365 * 24 * 60 * 60 * 1000;
@@ -64,6 +80,7 @@ const MAX_INLINE_BODY_BYTES = 500_000;
 
 export const listReceived = query({
   args: { limit: v.optional(v.number()) },
+  returns: v.array(receivedMessageListItemValidator),
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     const addresses = await ctx.db
@@ -76,24 +93,32 @@ export const listReceived = query({
 
     const limit = Math.min(Math.max(args.limit ?? 200, 1), 500);
     const messageIds = new Map<Id<"receivedMessages">, number>();
-    for (const { address } of addresses) {
-      const recipients = await ctx.db
-        .query("receivedMessageRecipients")
-        .withIndex("by_address_and_receivedAt", (q) => q.eq("address", address))
-        .order("desc")
-        .take(limit);
+    const recipientGroups = await Promise.all(
+      addresses.map(({ address }) =>
+        ctx.db
+          .query("receivedMessageRecipients")
+          .withIndex("by_address_and_receivedAt", (q) =>
+            q.eq("address", address),
+          )
+          .order("desc")
+          .take(limit),
+      ),
+    );
+    for (const recipients of recipientGroups) {
       for (const recipient of recipients) {
         messageIds.set(recipient.messageId, recipient.receivedAt);
       }
     }
 
-    const messages = [];
-    for (const messageId of messageIds.keys()) {
-      const message = await ctx.db.get("receivedMessages", messageId);
-      if (message !== null && message.deletedOn === undefined) {
-        messages.push(message);
-      }
-    }
+    const loadedMessages = await Promise.all(
+      [...messageIds.keys()].map((messageId) =>
+        ctx.db.get("receivedMessages", messageId),
+      ),
+    );
+    const messages = loadedMessages.filter(
+      (message): message is Doc<"receivedMessages"> =>
+        message !== null && message.deletedOn === undefined,
+    );
 
     return await withWhitelistStatus(
       ctx,
@@ -162,6 +187,7 @@ export const listSent = query({
 });
 export const listKeptReceived = query({
   args: {},
+  returns: v.array(receivedMessageListItemValidator),
   handler: async (ctx) => {
     const { user } = await requireUser(ctx);
     const addresses = await ctx.db
@@ -194,6 +220,7 @@ export const listKeptReceived = query({
 
 export const listDeletedReceived = query({
   args: { limit: v.optional(v.number()) },
+  returns: v.array(receivedMessageListItemValidator),
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     const addresses = await ctx.db
@@ -1281,15 +1308,32 @@ async function withWhitelistStatus(
   ctx: QueryCtx,
   messages: Doc<"receivedMessages">[],
 ) {
-  const statuses = new Map<string, boolean>();
-  for (const message of messages) {
-    const address = normalizeSenderAddress(message.from);
-    if (!statuses.has(address)) {
-      statuses.set(address, await isSenderWhitelisted(ctx, address));
-    }
-  }
+  const senders = [
+    ...new Set(messages.map((message) => normalizeSenderAddress(message.from))),
+  ];
+  const statuses = new Map(
+    await Promise.all(
+      senders.map(
+        async (address) =>
+          [address, await isSenderWhitelisted(ctx, address)] as const,
+      ),
+    ),
+  );
+  // Lists need only summary fields. Bodies and webhook payloads stay in the
+  // detail query so every archive does not resend them for the entire mailbox.
   return messages.map((message) => ({
-    ...message,
+    _id: message._id,
+    _creationTime: message._creationTime,
+    from: message.from,
+    to: message.to,
+    cc: message.cc,
+    subject: message.subject,
+    attachmentCount: message.attachmentCount,
+    receivedAt: message.receivedAt,
+    resendEmailId: message.resendEmailId,
+    archived: message.archived,
+    kept: message.kept,
+    deletedOn: message.deletedOn,
     isWhitelisted: statuses.get(normalizeSenderAddress(message.from)) === true,
   }));
 }

@@ -42,6 +42,7 @@ import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { needsManualSignIn, signIn, signOut } from "./shoo";
+import { optimisticallyArchiveMessage } from "./archiveMessage";
 
 const PAGE_SIZE = 50;
 const SENT_PAGE_SIZE = 500;
@@ -399,7 +400,9 @@ function MailScreen() {
   );
   const fetchReceivedBody = useAction(api.emails.getReceivedBody);
   const blockSenderAndDelete = useMutation(api.emails.blockSenderAndDelete);
-  const archiveReceived = useMutation(api.emails.archiveReceived);
+  const archiveReceived = useMutation(
+    api.emails.archiveReceived,
+  ).withOptimisticUpdate(optimisticallyArchiveMessage);
   const deleteReceived = useMutation(api.emails.deleteReceived);
   const keepReceived = useMutation(api.emails.keepReceived);
   const [selectedBody, setSelectedBody] = useState<MessageBodyState>({
@@ -490,11 +493,14 @@ function MailScreen() {
 
   async function handleArchiveMessage(messageId: Id<"receivedMessages">) {
     setArchiveState({ status: "archiving", messageId });
+    setScreen("inbox");
     try {
       await archiveReceived({ messageId });
-      setSelectedId(null);
-      setScreen("inbox");
-      setArchiveState({ status: "idle" });
+      setArchiveState((current) =>
+        current.status === "archiving" && current.messageId === messageId
+          ? { status: "idle" }
+          : current,
+      );
     } catch (error: unknown) {
       setArchiveState({
         status: "error",

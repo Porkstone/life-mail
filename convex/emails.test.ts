@@ -47,6 +47,59 @@ async function receive(
   });
 }
 
+describe("archive and mailbox summaries", () => {
+  test("lists omit cached content while message details retain it", async () => {
+    const { t, user } = await setup();
+    const messageId = await receive(t);
+    const html = "<p>Large cached body</p>".repeat(1000);
+    await t.run((ctx) =>
+      ctx.db.patch("receivedMessages", messageId, {
+        bodyHtml: html,
+        bodyText: "Cached plain text",
+        rawEvent: JSON.stringify({ largeWebhookData: html }),
+      }),
+    );
+    const inbox = await user.query(api.emails.listReceived, { limit: 50 });
+    expect(inbox).toMatchObject([{ _id: messageId, subject: "Test message" }]);
+    await user.mutation(api.emails.keepReceived, { messageId });
+    const kept = await user.query(api.emails.listKeptReceived, {});
+    expect(kept).toMatchObject([{ _id: messageId, kept: true }]);
+    await user.mutation(api.emails.deleteReceived, { messageId });
+    const deleted = await user.query(api.emails.listDeletedReceived, {});
+    expect(deleted).toMatchObject([
+      { _id: messageId, deletedOn: expect.any(Number) },
+    ]);
+    for (const list of [inbox, kept, deleted]) {
+      expect(list[0]).not.toHaveProperty("bodyHtml");
+      expect(list[0]).not.toHaveProperty("bodyText");
+      expect(list[0]).not.toHaveProperty("rawEvent");
+      expect(JSON.stringify(list).length).toBeLessThan(1000);
+    }
+    const detail = await user.query(api.emails.getReceived, { messageId });
+    expect(detail?.message.bodyHtml).toBe(html);
+    expect(detail?.message.bodyText).toBe("Cached plain text");
+  });
+
+  test("archiving a kept message preserves its content and enforces ownership", async () => {
+    const { t, user } = await setup();
+    const messageId = await receive(t);
+    await user.mutation(api.emails.keepReceived, { messageId });
+    const otherUser = t.withIdentity({ subject: "other-mail-user" });
+    await otherUser.mutation(api.auth.ensureCurrentUser, {});
+    await expect(
+      otherUser.mutation(api.emails.archiveReceived, { messageId }),
+    ).rejects.toThrow("Unauthorized");
+    await user.mutation(api.emails.archiveReceived, { messageId });
+    expect(await user.query(api.emails.listKeptReceived, {})).toEqual([]);
+    expect(
+      await user.query(api.emails.listReceived, { limit: 50 }),
+    ).toMatchObject([{ _id: messageId, archived: true, kept: false }]);
+    const detail = await user.query(api.emails.getReceived, { messageId });
+    expect(detail?.message.deletedOn).toBeUndefined();
+    expect(detail?.message.subject).toBe("Test message");
+  });
+});
+
 describe("sender whitelist", () => {
   test("normalizes addresses, removes an existing block and prevents duplicates", async () => {
     const { t, user } = await setup();
